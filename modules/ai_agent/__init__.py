@@ -17,7 +17,7 @@ from .prompts import (
 )
 from .context_manager import ContextManager
 from .diagnostic_flow import DiagnosticFlow, DIAGNOSTIC_STAGES
-from .presets import DIAGNOSTIC_PRESETS, get_preset_names
+from .presets import DIAGNOSTIC_PRESETS, get_preset_names, get_preset, parse_slash_command, get_help_text
 
 __all__ = [
     # Tools
@@ -38,4 +38,7 @@ __all__ = [
     # Presets
     "DIAGNOSTIC_PRESETS",
     "get_preset_names",
+    "get_preset",
+    "parse_slash_command",
+    "get_help_text",
 ]

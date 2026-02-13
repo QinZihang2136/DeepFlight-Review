@@ -32,7 +32,7 @@ class ContextManager:
     def estimate_tokens(self, content: Any) -> int:
         """估算内容的 token 数量"""
         if isinstance(content, dict):
-            content = json.dumps(content, ensure_ascii=False)
+            content = json.dumps(content, ensure_ascii=False, default=str)
         elif not isinstance(content, str):
             content = str(content)
 
@@ -91,7 +91,7 @@ class ContextManager:
         self.messages.append({
             "role": "tool",
             "tool_call_id": tool_call_id,
-            "content": json.dumps(compressed, ensure_ascii=False)
+            "content": json.dumps(compressed, ensure_ascii=False, default=str)
         })
 
         self._maybe_compress()
