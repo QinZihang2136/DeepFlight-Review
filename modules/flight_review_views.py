@@ -1,0 +1,420 @@
+"""
+Flight Review 风格飞行概览页面渲染器。
+"""
+
+import pandas as pd
+import plotly.graph_objects as go
+import streamlit as st
+
+from modules.flight_review_layout import (
+    ACCEL_AXIS_CANDIDATES,
+    ACTUATOR_FFT_CANDIDATES,
+    ANGULAR_RATE_FFT_CANDIDATES,
+    FLIGHT_REVIEW_GROUPS,
+    GYRO_AXIS_CANDIDATES,
+    IMU_CUTOFF_PARAMS,
+    MODE_COLORS,
+)
+from modules.ui_components import render_map
+
+
+def _find_first_topic(analyzer, candidates):
+    for t in candidates:
+        df = analyzer.get_topic(t, downsample=True)
+        if df is not None:
+            return t
+    return None
+
+
+def _add_mode_background(fig, mode_segments, t0, t1):
+    for seg in mode_segments:
+        s0 = max(float(seg["t0"]), float(t0))
+        s1 = min(float(seg["t1"]), float(t1))
+        if s1 <= s0:
+            continue
+        c = MODE_COLORS.get(seg.get("name", ""), "rgba(120,120,120,0.08)")
+        fig.add_vrect(x0=s0, x1=s1, fillcolor=c, line_width=0)
+
+
+def _resolve_topic_by_prefix(analyzer, prefix):
+    topics = analyzer.get_available_topics()
+    for t in topics:
+        if t == prefix or t.startswith(prefix):
+            return t
+    return None
+
+
+def _first_valid_candidate(analyzer, candidates):
+    topics = analyzer.get_available_topics()
+    for item in candidates:
+        topic = item.get("topic")
+        if not topic and item.get("topic_prefix"):
+            topic = _resolve_topic_by_prefix(analyzer, item["topic_prefix"])
+        if topic and topic in topics:
+            return topic, item
+    return None, None
+
+
+def _plot_group(analyzer, group, t0, t1, use_downsample, show_rangeslider, mode_segments):
+    topic = _find_first_topic(analyzer, group["topic_candidates"])
+    if topic is None:
+        st.info(f"缺失主题: 期望 {group['topic_candidates']}")
+        return
+
+    df = analyzer.get_topic(topic, downsample=use_downsample)
+    if df is None or "timestamp" not in df.columns:
+        st.info(f"主题不可用: {topic}")
+        return
+
+    df = df[(df["timestamp"] >= t0) & (df["timestamp"] <= t1)]
+    if df.empty:
+        st.info(f"时间窗口内无数据: {topic}")
+        return
+
+    # Actuator / RC 组做动态字段聚合
+    if group["key"] == "actuators":
+        dynamic = [c for c in df.columns if c != "timestamp" and ("output" in c or "control" in c)]
+        signals = [(c, c) for c in dynamic[:16]]
+    elif group["key"] == "rc":
+        dynamic = [c for c in df.columns if c != "timestamp" and ("channel" in c or "x" == c or "y" == c or "z" == c or "r" == c)]
+        signals = [(c, c) for c in dynamic[:12]]
+    else:
+        signals = group["signals"]
+
+    valid = [(col, name) for col, name in signals if col in df.columns]
+    if not valid:
+        st.info(f"无可用字段: topic={topic}, expected={[s[0] for s in signals]}")
+        return
+
+    fig = go.Figure()
+    _add_mode_background(fig, mode_segments, t0, t1)
+    for col, name in valid:
+        fig.add_trace(go.Scatter(x=df["timestamp"], y=df[col], name=f"{topic}.{name}", line=dict(width=1.4)))
+
+    fig.update_layout(
+        height=300,
+        margin=dict(l=0, r=0, t=30, b=0),
+        hovermode="x unified",
+        xaxis=dict(
+            showgrid=True,
+            gridcolor="rgba(0,0,0,0.08)",
+            rangeslider=dict(visible=show_rangeslider),
+            range=[float(t0), float(t1)],
+        ),
+        yaxis=dict(showgrid=True, gridcolor="rgba(0,0,0,0.08)"),
+        legend=dict(orientation="h", yanchor="bottom", y=1.01, xanchor="left", x=0),
+        plot_bgcolor="rgba(250,250,250,1)",
+    )
+    st.plotly_chart(fig, width="stretch", config={"scrollZoom": True, "displaylogo": False})
+
+
+def _render_status_cards(summary):
+    c1, c2, c3, c4 = st.columns(4)
+    with c1:
+        gps = summary.get("gps") or {}
+        st.metric("GPS Fix", str(gps.get("best_fix_type", "N/A")))
+    with c2:
+        batt = summary.get("battery") or {}
+        rem = batt.get("min_remaining")
+        st.metric("Battery Min", f"{rem*100:.1f}%" if isinstance(rem, (int, float)) else "N/A")
+    with c3:
+        ekf = summary.get("ekf") or {}
+        st.metric("EKF Reset (Vert)", str(ekf.get("pos_vert_reset_counter", "N/A")))
+    with c4:
+        failsafe_changes = summary.get("failsafe_changes") or []
+        fs_count = sum(1 for x in failsafe_changes if bool(x.get("failsafe")))
+        st.metric("Failsafe Events", str(fs_count))
+
+
+def _render_events_and_messages(analyzer, t0, t1):
+    st.markdown("### Messages / Events")
+    c1, c2 = st.columns([1, 1])
+    with c1:
+        timeline = analyzer.get_event_timeline(max_events=400).get("events", [])
+        if timeline:
+            df = pd.DataFrame(timeline)
+            df = df[(df["t_s"] >= t0) & (df["t_s"] <= t1)]
+            st.dataframe(df, width="stretch", height=260)
+        else:
+            st.info("无事件时间线数据")
+    with c2:
+        msg_df = analyzer.get_messages(limit=2000)
+        if not msg_df.empty:
+            msg_df = msg_df[(msg_df["timestamp"] >= t0) & (msg_df["timestamp"] <= t1)]
+            st.dataframe(msg_df, width="stretch", height=260)
+        else:
+            st.info("无日志消息数据")
+
+    st.markdown("### Parameters Changed")
+    p_df = analyzer.get_parameter_changes(limit=2000)
+    if p_df.empty:
+        st.info("无参数变化")
+    else:
+        p_df = p_df[(p_df["timestamp"] >= t0) & (p_df["timestamp"] <= t1)]
+        st.dataframe(p_df, width="stretch", height=220)
+
+
+def _build_cutoff_param_map(analyzer):
+    params = analyzer.list_parameters(prefix="IMU_", max_results=1000)
+    out = {}
+    for p in params:
+        name = str(p.get("name", ""))
+        if name in IMU_CUTOFF_PARAMS:
+            out[name] = p.get("value")
+    return out
+
+
+def _render_gps_noise_jamming_panel(analyzer, t0, t1, mode_segments):
+    st.markdown("#### GPS Noise & Jamming")
+    df = analyzer.get_gps_noise_jamming(t0=t0, t1=t1)
+    if df.empty:
+        st.info("缺失 GPS 噪声字段: 期望 noise_per_ms / jamming_indicator")
+        return
+    fig = go.Figure()
+    _add_mode_background(fig, mode_segments, t0, t1)
+    if "noise_per_ms" in df.columns and df["noise_per_ms"].notna().any():
+        fig.add_trace(go.Scatter(x=df["timestamp"], y=df["noise_per_ms"], name="Noise per ms", line=dict(width=1.4)))
+    if "jamming_indicator" in df.columns and df["jamming_indicator"].notna().any():
+        fig.add_trace(
+            go.Scatter(x=df["timestamp"], y=df["jamming_indicator"], name="Jamming Indicator", line=dict(width=1.4))
+        )
+    fig.update_layout(
+        height=300,
+        margin=dict(l=0, r=0, t=20, b=0),
+        hovermode="x unified",
+        xaxis=dict(showgrid=True, gridcolor="rgba(0,0,0,0.08)", range=[float(t0), float(t1)]),
+        yaxis=dict(showgrid=True, gridcolor="rgba(0,0,0,0.08)"),
+        legend=dict(orientation="h", yanchor="bottom", y=1.01, xanchor="left", x=0),
+    )
+    st.plotly_chart(fig, width="stretch", config={"scrollZoom": True, "displaylogo": False})
+
+
+def _render_thrust_magnetic_panel(analyzer, t0, t1, mode_segments):
+    st.markdown("#### Thrust & Magnetic Field")
+    df = analyzer.get_thrust_and_magnetic(t0=t0, t1=t1)
+    if df.empty:
+        st.info("缺失推力或磁场数据: 期望 actuator_controls/actuator_motors + sensor_mag")
+        return
+    fig = go.Figure()
+    _add_mode_background(fig, mode_segments, t0, t1)
+    if "thrust" in df.columns and df["thrust"].notna().any():
+        fig.add_trace(go.Scatter(x=df["timestamp"], y=df["thrust"], name="Thrust", line=dict(width=1.4)))
+    if "mag_norm" in df.columns and df["mag_norm"].notna().any():
+        fig.add_trace(go.Scatter(x=df["timestamp"], y=df["mag_norm"], name="Norm of Magnetic Field", line=dict(width=1.4)))
+    fig.update_layout(
+        height=300,
+        margin=dict(l=0, r=0, t=20, b=0),
+        hovermode="x unified",
+        xaxis=dict(showgrid=True, gridcolor="rgba(0,0,0,0.08)", range=[float(t0), float(t1)]),
+        yaxis=dict(showgrid=True, gridcolor="rgba(0,0,0,0.08)"),
+        legend=dict(orientation="h", yanchor="bottom", y=1.01, xanchor="left", x=0),
+    )
+    st.plotly_chart(fig, width="stretch", config={"scrollZoom": True, "displaylogo": False})
+
+
+def _render_fft_panel(analyzer, panel_title, candidates, t0, t1, cutoff_map=None):
+    st.markdown(f"#### {panel_title}")
+    topic, chosen = _first_valid_candidate(analyzer, candidates)
+    if not topic or not chosen:
+        st.info(f"缺失主题: 期望 {[x.get('topic') or x.get('topic_prefix') for x in candidates]}")
+        return
+
+    fields = chosen["fields"]
+    labels = chosen["labels"]
+    fft_map = analyzer.compute_fft_multi(topic, fields, t0=t0, t1=t1, window="hann")
+    fig = go.Figure()
+    has_trace = False
+    scale = 57.29577951308232 if chosen.get("to_deg") else 1.0
+    for field, label in zip(fields, labels):
+        df = fft_map.get(field)
+        if df is None or df.empty:
+            continue
+        y = df["amplitude"] * scale
+        fig.add_trace(go.Scatter(x=df["freq_hz"], y=y, name=label, line=dict(width=1.4)))
+        has_trace = True
+
+    if not has_trace:
+        st.info(f"数据不足: topic={topic}, fields={fields}")
+        return
+
+    if cutoff_map:
+        for p in IMU_CUTOFF_PARAMS:
+            value = cutoff_map.get(p)
+            try:
+                if value is None:
+                    continue
+                x = float(value)
+            except Exception:
+                continue
+            fig.add_vline(x=x, line_dash="dash", line_color="rgba(20,20,20,0.65)")
+            fig.add_annotation(x=x, y=1.0, xref="x", yref="paper", text=p, showarrow=False, yanchor="bottom")
+
+    fig.update_layout(
+        height=320,
+        margin=dict(l=0, r=0, t=20, b=0),
+        hovermode="x unified",
+        xaxis=dict(showgrid=True, gridcolor="rgba(0,0,0,0.08)", title="Hz"),
+        yaxis=dict(showgrid=True, gridcolor="rgba(0,0,0,0.08)", title="Amplitude"),
+        legend=dict(orientation="h", yanchor="bottom", y=1.01, xanchor="left", x=0),
+    )
+    st.plotly_chart(fig, width="stretch", config={"scrollZoom": True, "displaylogo": False})
+
+
+def _render_single_spectrogram(analyzer, panel_title, topic, field, t0, t1, max_hz):
+    st.markdown(f"#### {panel_title}")
+    spec = analyzer.compute_spectrogram(topic, field, t0=t0, t1=t1, nperseg=512, noverlap=256)
+    if spec.empty:
+        st.info(f"时频数据不足: topic={topic}, field={field}")
+        return
+    if max_hz is not None:
+        spec = spec[spec["freq_hz"] <= float(max_hz)]
+    grid = spec.pivot_table(index="freq_hz", columns="time_s", values="power_db", aggfunc="mean").sort_index()
+    if grid.empty:
+        st.info(f"无法生成时频图: topic={topic}, field={field}")
+        return
+
+    fig = go.Figure(
+        data=go.Heatmap(
+            z=grid.values,
+            x=grid.columns.to_numpy(),
+            y=grid.index.to_numpy(),
+            colorscale="Viridis",
+            colorbar=dict(title="[dB]"),
+        )
+    )
+    fig.update_layout(
+        height=340,
+        margin=dict(l=0, r=0, t=20, b=0),
+        xaxis=dict(title="Time [s]", range=[float(t0), float(t1)]),
+        yaxis=dict(title="Hz"),
+    )
+    st.plotly_chart(fig, width="stretch", config={"scrollZoom": True, "displaylogo": False})
+
+
+def _render_vibration_spectrogram_panel(analyzer, t0, t1):
+    acc_topic, acc_cfg = _first_valid_candidate(analyzer, ACCEL_AXIS_CANDIDATES)
+    gyro_topic, gyro_cfg = _first_valid_candidate(analyzer, GYRO_AXIS_CANDIDATES)
+
+    if not acc_topic:
+        st.info("缺失加速度主题: 期望 sensor_combined 或 sensor_accel")
+    else:
+        _render_single_spectrogram(
+            analyzer=analyzer,
+            panel_title="Acceleration Power Spectral Density",
+            topic=acc_topic,
+            field=acc_cfg["fields"][2],
+            t0=t0,
+            t1=t1,
+            max_hz=100,
+        )
+
+    if not gyro_topic:
+        st.info("缺失角速度主题: 期望 sensor_combined 或 vehicle_angular_velocity")
+    else:
+        _render_single_spectrogram(
+            analyzer=analyzer,
+            panel_title="Angular Velocity Power Spectral Density",
+            topic=gyro_topic,
+            field=gyro_cfg["fields"][2],
+            t0=t0,
+            t1=t1,
+            max_hz=140,
+        )
+
+
+def _render_frequency(analyzer, t0, t1):
+    st.markdown("### Frequency Analysis (FFT / PSD)")
+    cutoff_map = _build_cutoff_param_map(analyzer)
+    _render_fft_panel(analyzer, "Actuator Controls FFT", ACTUATOR_FFT_CANDIDATES, t0, t1, cutoff_map=cutoff_map)
+    _render_fft_panel(analyzer, "Angular Velocity FFT", ANGULAR_RATE_FFT_CANDIDATES, t0, t1, cutoff_map=cutoff_map)
+    _render_vibration_spectrogram_panel(analyzer, t0, t1)
+
+    st.markdown("#### Custom Signal FFT / PSD")
+    topics = analyzer.get_available_topics()
+    f_c1, f_c2, f_c3 = st.columns([2, 2, 1])
+    with f_c1:
+        topic = st.selectbox("FFT/PSD Topic", topics, key="fr_fft_topic")
+    with f_c2:
+        fields = analyzer.get_topic_numeric_fields(topic)
+        field = st.selectbox("Signal Field", fields, key="fr_fft_field") if fields else None
+    with f_c3:
+        st.caption("使用当前时间窗口")
+
+    if not field:
+        st.info("该 topic 无可用数值字段")
+        return
+
+    fft_df = analyzer.compute_fft(topic, field, t0=t0, t1=t1)
+    psd_df = analyzer.compute_psd(topic, field, t0=t0, t1=t1)
+
+    c1, c2 = st.columns(2)
+    with c1:
+        if fft_df.empty:
+            st.info("FFT 数据不足")
+        else:
+            fig = go.Figure()
+            fig.add_trace(go.Scatter(x=fft_df["freq_hz"], y=fft_df["amplitude"], name="FFT amplitude"))
+            fig.update_layout(height=260, margin=dict(l=0, r=0, t=25, b=0), xaxis_title="Hz")
+            st.plotly_chart(fig, width="stretch", config={"scrollZoom": True, "displaylogo": False})
+    with c2:
+        if psd_df.empty:
+            st.info("PSD 数据不足")
+        else:
+            fig = go.Figure()
+            fig.add_trace(go.Scatter(x=psd_df["freq_hz"], y=psd_df["psd"], name="PSD"))
+            fig.update_layout(height=260, margin=dict(l=0, r=0, t=25, b=0), xaxis_title="Hz")
+            st.plotly_chart(fig, width="stretch", config={"scrollZoom": True, "displaylogo": False})
+
+
+def render_flight_review_dashboard_v2(analyzer):
+    summary = analyzer.get_flight_summary()
+    mode_segments = analyzer.get_mode_segments()
+
+    # 顶部信息区
+    st.markdown("### Flight Overview")
+    h1, h2, h3, h4, h5 = st.columns(5)
+    h1.metric("Start", str(analyzer.start_time.strftime("%Y-%m-%d %H:%M:%S")))
+    h2.metric("Duration", f"{analyzer.duration:.1f}s")
+    h3.metric("Airframe", str(analyzer.airframe))
+    h4.metric("System", str(analyzer.sys_name))
+    h5.metric("Firmware", str(analyzer.ver_sw))
+
+    # 全局窗口
+    c1, c2 = st.columns([4, 2])
+    with c1:
+        t0, t1 = st.slider(
+            "Global Time Window (s)",
+            min_value=0.0,
+            max_value=float(max(analyzer.duration, 0.1)),
+            value=(0.0, float(max(analyzer.duration, 0.1))),
+            step=max(float(analyzer.duration) / 800.0, 0.01),
+            key="fr_global_time",
+        )
+    with c2:
+        use_downsample = st.checkbox("Use Downsample", value=True, key="fr_downsample")
+        show_rangeslider = st.checkbox("Rangeslider", value=True, key="fr_rangeslider")
+
+    # 地图 + 状态卡
+    render_map(analyzer)
+    _render_status_cards(summary)
+
+    st.markdown("---")
+    st.markdown("### Time Series Groups")
+    for group in FLIGHT_REVIEW_GROUPS:
+        with st.expander(group["title"], expanded=group.get("expanded", False)):
+            _plot_group(
+                analyzer=analyzer,
+                group=group,
+                t0=t0,
+                t1=t1,
+                use_downsample=use_downsample,
+                show_rangeslider=show_rangeslider,
+                mode_segments=mode_segments,
+            )
+
+    st.markdown("### GPS & Magnetic")
+    _render_gps_noise_jamming_panel(analyzer, t0, t1, mode_segments)
+    _render_thrust_magnetic_panel(analyzer, t0, t1, mode_segments)
+
+    _render_frequency(analyzer, t0, t1)
+    _render_events_and_messages(analyzer, t0, t1)

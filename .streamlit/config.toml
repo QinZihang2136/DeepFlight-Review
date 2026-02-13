@@ -1,0 +1,5 @@
+[server]
+# 单位是 MB，默认 200。
+# 调大后可上传更大的 ULog 文件。
+maxUploadSize = 4096
+maxMessageSize = 4096
