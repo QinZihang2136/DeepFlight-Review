@@ -1,6 +1,9 @@
 import json
 import os
 import tempfile
+import threading
+import time
+from queue import Queue
 
 import pandas as pd
 import streamlit as st
@@ -50,7 +53,7 @@ def run_ai_agent(
     context_manager: ContextManager,
     progress_callback=None,
     tool_callback=None,
-    max_steps: int = 10,
+    max_steps: int = 20,
 ):
     """
     运行 AI Agent，带上下文管理和进度反馈
@@ -69,6 +72,7 @@ def run_ai_agent(
         str: AI 响应内容
     """
     tools = build_tool_specs()
+    tool_call_history = []  # 记录工具调用历史
 
     # 添加用户消息
     context_manager.add_user_message(user_prompt)
@@ -120,6 +124,7 @@ def run_ai_agent(
                 tool_args = {}
 
             tool_name = tc.function.name
+            tool_call_history.append(tool_name)
 
             # 通知工具调用
             if tool_callback:
@@ -138,7 +143,28 @@ def run_ai_agent(
             if tool_callback:
                 tool_callback(tool_name, tool_args, "completed", tool_result)
 
-    return "工具调用步数达到上限，建议缩小分析范围后重试。"
+        # 检查是否需要提前终止（重复工具调用）
+        if len(tool_call_history) >= 3:
+            recent_calls = tool_call_history[-3:]
+            if len(set(recent_calls)) == 1:
+                # 连续3次调用同一工具，可能陷入循环
+                context_manager.add_user_message(
+                    "你已经多次调用同一个工具，请根据已有信息给出分析结论。"
+                )
+
+    # 达到步数上限，尝试获取部分结论
+    stats = context_manager.get_stats()
+    tools_used = list(set(tool_call_history))
+    return f"""分析已达到 {max_steps} 步的上限。
+
+**已调用的工具**: {', '.join(tools_used)}
+
+**上下文状态**: {stats['total_tokens']} tokens ({stats['utilization']}% 使用)
+
+💡 **建议**: 可以尝试：
+1. 使用更具体的预设（如 /quick 快速检查）
+2. 清空对话历史后重新开始
+3. 缩小问题范围，一次只问一个方面"""
 
 
 def run_ai_stream(client, model_name: str, messages: list):
@@ -163,19 +189,19 @@ def run_ai_stream(client, model_name: str, messages: list):
 # =============================================================================
 
 provider_configs = {
+    "GLM": {
+        "key_label": "GLM API Key",
+        "base_url": "https://open.bigmodel.cn/api/paas/v4",
+        "models": ["glm-5", "glm-4.7", "glm-4.5", "glm-4-air", "glm-4-flash"],
+        "default_key": "",
+        "default_model": "glm-5",
+    },
     "DeepSeek": {
         "key_label": "DeepSeek API Key",
         "base_url": "https://api.deepseek.com",
         "models": ["deepseek-chat", "deepseek-reasoner"],
         "default_key": "",
         "default_model": "deepseek-chat",
-    },
-    "GLM": {
-        "key_label": "GLM API Key",
-        "base_url": "https://open.bigmodel.cn/api/coding/paas/v4",
-        "models": ["glm-4.7", "glm-4.5", "glm-4-air", "glm-4-flash"],
-        "default_key": "",
-        "default_model": "glm-4.7",
     },
 }
 
@@ -186,7 +212,7 @@ provider_configs = {
 with st.expander("连接与日志设置", expanded=False):
     c1, c2, c3 = st.columns([1, 2, 2])
     with c1:
-        provider = st.selectbox("AI 提供商", ["DeepSeek", "GLM"], index=0)
+        provider = st.selectbox("AI 提供商", ["GLM", "DeepSeek"], index=0)
     provider_cfg = provider_configs[provider]
     with c2:
         env_key = os.getenv("LOGCORTEX_API_KEY", "")
@@ -246,6 +272,145 @@ if "chart_tabs" not in st.session_state:
     st.session_state.chart_tabs = [{"name": "tab1", "signals": []}]
 if "active_chart_tab" not in st.session_state:
     st.session_state.active_chart_tab = 0
+
+# 后台分析相关状态
+if "bg_analysis" not in st.session_state:
+    st.session_state.bg_analysis = {
+        "running": False,
+        "status": "",
+        "tool_logs": [],
+        "result": None,
+        "error": None,
+        "user_prompt": None,
+        "thread": None,
+    }
+
+
+# =============================================================================
+# 后台分析函数
+# =============================================================================
+
+def run_background_analysis(client, model_name, analyzer, user_prompt, ctx_mgr, max_steps):
+    """在后台线程中运行AI分析"""
+    import copy
+
+    bg = st.session_state.bg_analysis
+    bg["status"] = "starting"
+    bg["tool_logs"] = []
+    bg["result"] = None
+    bg["error"] = None
+
+    tools = build_tool_specs()
+    tool_call_history = []
+
+    # 添加用户消息到上下文
+    ctx_mgr.add_user_message(user_prompt)
+
+    try:
+        for step in range(max_steps):
+            if not bg["running"]:  # 检查是否被取消
+                bg["status"] = "cancelled"
+                return
+
+            bg["status"] = f"thinking:{step+1}/{max_steps}"
+            messages = ctx_mgr.get_messages()
+
+            resp = client.chat.completions.create(
+                model=model_name,
+                messages=messages,
+                tools=tools,
+                tool_choice="auto",
+                temperature=0.2,
+            )
+
+            msg = resp.choices[0].message
+            tool_calls = getattr(msg, "tool_calls", None)
+
+            if not tool_calls:
+                # 完成
+                content = msg.content or "未生成有效内容。"
+                ctx_mgr.add_assistant_message(content)
+                bg["result"] = content
+                bg["status"] = "completed"
+                return
+
+            # 添加助手消息
+            tool_calls_data = [
+                {
+                    "id": tc.id,
+                    "type": "function",
+                    "function": {"name": tc.function.name, "arguments": tc.function.arguments or "{}"},
+                }
+                for tc in tool_calls
+            ]
+            ctx_mgr.add_assistant_message(tool_calls=tool_calls_data)
+
+            # 执行工具
+            for tc in tool_calls:
+                tool_name = tc.function.name
+                tool_call_history.append(tool_name)
+                bg["status"] = f"tool:{tool_name}"
+
+                try:
+                    tool_args = json.loads(tc.function.arguments or "{}")
+                except:
+                    tool_args = {}
+
+                tool_result = execute_tool(analyzer, tool_name, tool_args)
+                ctx_mgr.add_tool_result(tc.id, tool_name, tool_result)
+
+                # 记录工具日志
+                if "error" not in tool_result:
+                    if tool_name == "get_quick_health_check":
+                        status_text = "✅ 正常" if tool_result.get("flight_ok") else "⚠️ 有问题"
+                        bg["tool_logs"].append(f"✅ `{tool_name}`: {status_text}")
+                    elif tool_name == "get_subsystem_summary":
+                        sub = tool_result.get("subsystem", "?")
+                        st_text = tool_result.get("status", "?")
+                        bg["tool_logs"].append(f"✅ `{tool_name}`({sub}): {st_text}")
+                    else:
+                        bg["tool_logs"].append(f"✅ `{tool_name}`: 完成")
+                else:
+                    bg["tool_logs"].append(f"❌ `{tool_name}`: 失败")
+
+            # 循环检测
+            if len(tool_call_history) >= 3:
+                recent = tool_call_history[-3:]
+                if len(set(recent)) == 1:
+                    ctx_mgr.add_user_message("你已经多次调用同一个工具，请给出结论。")
+
+        # 达到步数上限
+        stats = ctx_mgr.get_stats()
+        tools_used = list(set(tool_call_history))
+        bg["result"] = f"""分析已达到 {max_steps} 步的上限。
+
+**已调用的工具**: {', '.join(tools_used)}
+
+**上下文状态**: {stats['total_tokens']} tokens ({stats['utilization']}% 使用)
+
+💡 **建议**: 可以尝试：
+1. 使用更具体的预设（如 /quick 快速检查）
+2. 清空对话历史后重新开始
+3. 缩小问题范围"""
+        bg["status"] = "completed"
+
+    except Exception as e:
+        bg["error"] = str(e)
+        bg["status"] = "error"
+
+
+def start_background_analysis(client, model_name, analyzer, user_prompt, ctx_mgr, max_steps):
+    """启动后台分析线程"""
+    bg = st.session_state.bg_analysis
+    bg["running"] = True
+    bg["user_prompt"] = user_prompt
+
+    def run():
+        run_background_analysis(client, model_name, analyzer, user_prompt, ctx_mgr, max_steps)
+
+    thread = threading.Thread(target=run, daemon=True)
+    thread.start()
+    bg["thread"] = thread
 
 
 # =============================================================================
@@ -407,78 +572,85 @@ if st.session_state.analyzer:
                 else:
                     user_prompt = chat_input
 
-            # --- 执行 AI 分析 ---
-            if user_prompt:
-                # 添加到历史
+            # --- 执行 AI 分析（后台模式）---
+            bg = st.session_state.bg_analysis
+
+            # 启动新的分析任务
+            if user_prompt and not bg["running"]:
+                # 添加用户消息到历史
                 st.session_state.messages.append({"role": "user", "content": user_prompt})
-                chat_container.chat_message("user").markdown(user_prompt)
 
-                with chat_container.chat_message("assistant"):
-                    msg_box = st.empty()
-                    tool_logs = []
+                # 计算最大步数
+                stats_before = ctx_mgr.get_stats()
+                utilization = stats_before['utilization']
+                if utilization < 30:
+                    max_steps = 30
+                elif utilization < 50:
+                    max_steps = 20
+                else:
+                    max_steps = 15
 
-                    def progress_callback(step, max_steps, status):
-                        """进度回调"""
-                        if status == "thinking":
-                            progress_placeholder.info(f"🧠 AI 思考中... (步骤 {step+1}/{max_steps})")
-                        elif status.startswith("tool:"):
-                            tool_name = status.split(":")[1]
-                            progress_placeholder.info(f"🔧 调用工具: `{tool_name}`")
+                # 启动后台分析
+                start_background_analysis(
+                    client=client,
+                    model_name=model_name,
+                    analyzer=analyzer,
+                    user_prompt=user_prompt,
+                    ctx_mgr=ctx_mgr,
+                    max_steps=max_steps,
+                )
+                st.rerun()
 
-                    def tool_callback(tool_name, args, status, result=None):
-                        """工具回调"""
-                        if status == "calling":
-                            tool_logs.append(f"⏳ 调用 `{tool_name}`...")
-                        elif status == "completed":
-                            # 生成结果摘要
-                            if result and "error" not in result:
-                                if tool_name == "get_quick_health_check":
-                                    status_text = "✅ 正常" if result.get("flight_ok") else "⚠️ 有问题"
-                                    tool_logs.append(f"✅ `{tool_name}`: {status_text}")
-                                elif tool_name == "get_subsystem_summary":
-                                    sub = result.get("subsystem", "?")
-                                    st_text = result.get("status", "?")
-                                    tool_logs.append(f"✅ `{tool_name}`({sub}): {st_text}")
-                                elif tool_name == "get_event_timeline":
-                                    cnt = result.get("count", 0)
-                                    tool_logs.append(f"✅ `{tool_name}`: {cnt} 个事件")
-                                else:
-                                    tool_logs.append(f"✅ `{tool_name}`: 完成")
-                            else:
-                                tool_logs.append(f"❌ `{tool_name}`: 失败")
+            # 显示后台分析状态
+            if bg["running"]:
+                status = bg.get("status", "")
+                if status.startswith("thinking:"):
+                    progress_placeholder.info(f"🧠 AI 思考中... ({status.split(':')[1]})")
+                elif status.startswith("tool:"):
+                    tool_name = status.split(":")[1]
+                    progress_placeholder.info(f"🔧 调用工具: `{tool_name}`")
+                else:
+                    progress_placeholder.info("🔄 正在分析...")
 
-                        # 更新工具日志显示
-                        tool_log_placeholder.markdown("\n".join(tool_logs[-8:]))
+                # 显示工具日志
+                if bg.get("tool_logs"):
+                    tool_log_placeholder.markdown("\n".join(bg["tool_logs"][-8:]))
 
-                    try:
-                        msg_box.markdown("🔄 正在分析...")
+                # 检查是否完成
+                if bg["status"] == "completed":
+                    # 保存结果到消息历史
+                    if bg.get("result"):
+                        st.session_state.messages.append({"role": "assistant", "content": bg["result"]})
+                    bg["running"] = False
+                    progress_placeholder.empty()
+                    tool_log_placeholder.empty()
+                    st.rerun()
 
-                        final_resp = run_ai_agent(
-                            client=client,
-                            model_name=model_name,
-                            analyzer=analyzer,
-                            user_prompt=user_prompt,
-                            context_manager=ctx_mgr,
-                            progress_callback=progress_callback,
-                            tool_callback=tool_callback,
-                            max_steps=10,
-                        )
+                elif bg["status"] == "error":
+                    error_msg = f"❌ 分析出错: {bg.get('error', '未知错误')}"
+                    st.session_state.messages.append({"role": "assistant", "content": error_msg})
+                    bg["running"] = False
+                    progress_placeholder.empty()
+                    tool_log_placeholder.empty()
+                    st.error(error_msg)
 
-                        # 清除进度显示
-                        progress_placeholder.empty()
+                elif bg["status"] == "cancelled":
+                    bg["running"] = False
+                    progress_placeholder.warning("⚠️ 分析已取消")
+                    progress_placeholder.empty()
+                    tool_log_placeholder.empty()
 
-                        # 显示结果
-                        msg_box.markdown(final_resp)
-                        st.session_state.messages.append({"role": "assistant", "content": final_resp})
+                else:
+                    # 仍在运行，自动刷新
+                    time.sleep(0.5)
+                    st.rerun()
 
-                        # 显示上下文统计
-                        stats = ctx_mgr.get_stats()
-                        st.caption(f"📊 上下文: {stats['total_tokens']} tokens ({stats['utilization']}% 使用)")
-
-                    except Exception as e:
-                        progress_placeholder.empty()
-                        st.error(f"AI 分析失败: {e}")
-                        msg_box.markdown(f"❌ 分析出错: {e}")
+            # 显示对话历史中的最新消息
+            for msg in st.session_state.messages:
+                if msg["role"] == "user":
+                    chat_container.chat_message("user").markdown(msg["content"])
+                elif msg["role"] == "assistant":
+                    chat_container.chat_message("assistant").markdown(msg["content"])
 
             # --- 显示上下文信息 ---
             with st.expander("📊 上下文管理", expanded=False):

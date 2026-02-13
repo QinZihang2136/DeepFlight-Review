@@ -17,11 +17,11 @@ echo "  LogCortex V3 启动中..."
 echo "=========================================="
 echo ""
 echo "  日志目录: ~/Code/FlightLog/"
-echo "  API: GLM (已配置)"
+echo "  API: GLM-5 (默认)"
 echo ""
 echo "  访问地址: http://localhost:8501"
 echo ""
 echo "=========================================="
 
-# 启动 Streamlit
-streamlit run app.py
+# 启动 Streamlit (GLM-5 默认)
+streamlit run app.py --server.port 8501
