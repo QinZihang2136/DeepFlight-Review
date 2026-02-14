@@ -191,10 +191,10 @@ def _plot_group(analyzer, group, t0, t1, use_downsample, show_rangeslider, mode_
             y=0.98,
             xanchor="right",
             x=0.99,
-            bgcolor="rgba(255,255,255,0.7)",
+            bgcolor="rgba(255,255,255,0.9)",
             bordercolor="#ddd",
             borderwidth=1,
-            font=dict(size=10),
+            font=dict(size=10, color="#333"),
         ),
         # 白色背景（Flight Review 风格）
         plot_bgcolor="white",
@@ -317,7 +317,7 @@ def _render_gps_noise_jamming_panel(analyzer, t0, t1, mode_segments):
             bgcolor="rgba(255,255,255,0.7)",
             bordercolor="#ddd",
             borderwidth=1,
-            font=dict(size=10),
+            font=dict(size=10, color="#333"),
         ),
         plot_bgcolor="white",
     )
@@ -384,7 +384,7 @@ def _render_thrust_magnetic_panel(analyzer, t0, t1, mode_segments):
             bgcolor="rgba(255,255,255,0.7)",
             bordercolor="#ddd",
             borderwidth=1,
-            font=dict(size=10),
+            font=dict(size=10, color="#333"),
         ),
         plot_bgcolor="white",
     )
@@ -445,7 +445,7 @@ def _render_fft_panel(analyzer, panel_title, candidates, t0, t1, cutoff_map=None
             bgcolor="rgba(255,255,255,0.7)",
             bordercolor="#ddd",
             borderwidth=1,
-            font=dict(size=10),
+            font=dict(size=10, color="#333"),
         ),
         plot_bgcolor="white",
     )
