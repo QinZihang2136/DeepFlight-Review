@@ -3,14 +3,14 @@ Flight Review 页面布局与信号映射定义。
 """
 
 MODE_COLORS = {
-    "MANUAL": "rgba(180,180,180,0.12)",
-    "ALTCTL": "rgba(52,152,219,0.12)",
-    "POSCTL": "rgba(46,204,113,0.12)",
-    "AUTO_MISSION": "rgba(155,89,182,0.12)",
-    "AUTO_LOITER": "rgba(241,196,15,0.12)",
-    "AUTO_RTL": "rgba(230,126,34,0.12)",
-    "AUTO_LAND": "rgba(231,76,60,0.12)",
-    "OFFBOARD": "rgba(26,188,156,0.12)",
+    "MANUAL": "rgba(180,180,180,0.08)",
+    "ALTCTL": "rgba(52,152,219,0.08)",
+    "POSCTL": "rgba(46,204,113,0.08)",
+    "AUTO_MISSION": "rgba(155,89,182,0.08)",
+    "AUTO_LOITER": "rgba(241,196,15,0.08)",
+    "AUTO_RTL": "rgba(230,126,34,0.08)",
+    "AUTO_LAND": "rgba(231,76,60,0.08)",
+    "OFFBOARD": "rgba(26,188,156,0.08)",
 }
 
 GPS_NOISE_FIELDS = {
@@ -167,5 +167,26 @@ FLIGHT_REVIEW_GROUPS = [
         "expanded": False,
         "topic_candidates": ["manual_control_setpoint", "input_rc"],
         "signals": [],
+    },
+    {
+        "key": "temperature",
+        "title": "Temperature",
+        "expanded": False,
+        "topic_candidates": ["sensor_combined", "vehicle_air_data"],
+        "signals": [
+            ("baro_temp_celsius", "Baro Temperature [°C]"),
+            ("accel_temp_celsius", "Accel Temperature [°C]"),
+            ("gyro_temp_celsius", "Gyro Temperature [°C]"),
+        ],
+    },
+    {
+        "key": "cpu_ram",
+        "title": "CPU & RAM",
+        "expanded": False,
+        "topic_candidates": ["cpuload"],
+        "signals": [
+            ("load", "CPU Load [%]"),
+            ("ram_usage", "RAM Usage"),
+        ],
     },
 ]

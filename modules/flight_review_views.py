@@ -151,6 +151,27 @@ def _plot_group(analyzer, group, t0, t1, use_downsample, show_rangeslider, mode_
                 line=dict(width=1.5, color=px.colors.qualitative.Plotly[idx % 10]),
             ))
 
+    # Power 图表特殊处理：添加 5V 和 3.3V 阈值参考线
+    if group["key"] == "power":
+        # 添加 5V 参考线（Flight Review 标准）
+        fig.add_hline(
+            y=5.0,
+            line_dash="dot",
+            line_color="rgba(255,165,0,0.6)",
+            annotation_text="5V",
+            annotation_position="right",
+            annotation_font_size=9,
+        )
+        # 添加 3.3V 参考线（Flight Review 标准）
+        fig.add_hline(
+            y=3.3,
+            line_dash="dot",
+            line_color="rgba(255,165,0,0.6)",
+            annotation_text="3.3V",
+            annotation_position="right",
+            annotation_font_size=9,
+        )
+
     # Flight Review 标准图表样式
     fig.update_layout(
         height=300,
