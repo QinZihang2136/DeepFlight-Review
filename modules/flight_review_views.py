@@ -534,17 +534,22 @@ def _render_fft_panel(analyzer, panel_title, candidates, t0, t1, cutoff_map=None
     st.plotly_chart(fig, width="stretch", config={"scrollZoom": True, "displaylogo": False})
 
 
-def _render_single_spectrogram(analyzer, panel_title, topic, field, t0, t1, max_hz):
+def _render_single_spectrogram(analyzer, panel_title, topic, fields, t0, t1, max_hz):
+    """渲染单个频谱图 (Flight Review 标准: 三轴 PSD 求和)
+
+    Args:
+        fields: 字段列表，Flight Review 标准是对三轴数据求和
+    """
     st.markdown(f"#### {panel_title}")
-    spec = analyzer.compute_spectrogram(topic, field, t0=t0, t1=t1, nperseg=512, noverlap=256)
+    spec = analyzer.compute_spectrogram(topic, fields, t0=t0, t1=t1, nperseg=256, noverlap=128)
     if spec.empty:
-        st.info(f"时频数据不足: topic={topic}, field={field}")
+        st.info(f"时频数据不足: topic={topic}, fields={fields}")
         return
     if max_hz is not None:
         spec = spec[spec["freq_hz"] <= float(max_hz)]
     grid = spec.pivot_table(index="freq_hz", columns="time_s", values="power_db", aggfunc="mean").sort_index()
     if grid.empty:
-        st.info(f"无法生成时频图: topic={topic}, field={field}")
+        st.info(f"无法生成时频图: topic={topic}, fields={fields}")
         return
 
     fig = go.Figure(
@@ -562,24 +567,26 @@ def _render_single_spectrogram(analyzer, panel_title, topic, field, t0, t1, max_
         margin=dict(l=50, r=20, t=20, b=40),
         template="plotly_white",  # 强制使用白色主题
         xaxis=dict(title="Time [s]", range=[float(t0), float(t1)], showgrid=True, gridcolor="#e8e8e8"),
-        yaxis=dict(title="Hz", showgrid=True, gridcolor="#e8e8e8"),
+        yaxis=dict(title="[Hz]", showgrid=True, gridcolor="#e8e8e8"),  # Flight Review 标准用 [Hz]
         plot_bgcolor="white",
     )
     st.plotly_chart(fig, width="stretch", config={"scrollZoom": True, "displaylogo": False})
 
 
 def _render_vibration_spectrogram_panel(analyzer, t0, t1):
+    """渲染振动频谱图面板 (Flight Review 标准: 三轴 PSD 求和)"""
     acc_topic, acc_cfg = _first_valid_candidate(analyzer, ACCEL_AXIS_CANDIDATES)
     gyro_topic, gyro_cfg = _first_valid_candidate(analyzer, GYRO_AXIS_CANDIDATES)
 
     if not acc_topic:
         st.info("缺失加速度主题: 期望 sensor_combined 或 sensor_accel")
     else:
+        # Flight Review 标准: 使用三轴加速度数据的 PSD 求和
         _render_single_spectrogram(
             analyzer=analyzer,
             panel_title="Acceleration Power Spectral Density",
             topic=acc_topic,
-            field=acc_cfg["fields"][2],
+            fields=acc_cfg["fields"],  # 传递完整的三轴字段列表
             t0=t0,
             t1=t1,
             max_hz=100,
@@ -588,11 +595,12 @@ def _render_vibration_spectrogram_panel(analyzer, t0, t1):
     if not gyro_topic:
         st.info("缺失角速度主题: 期望 sensor_combined 或 vehicle_angular_velocity")
     else:
+        # Flight Review 标准: 使用三轴角速度数据的 PSD 求和
         _render_single_spectrogram(
             analyzer=analyzer,
             panel_title="Angular Velocity Power Spectral Density",
             topic=gyro_topic,
-            field=gyro_cfg["fields"][2],
+            fields=gyro_cfg["fields"],  # 传递完整的三轴字段列表
             t0=t0,
             t1=t1,
             max_hz=140,

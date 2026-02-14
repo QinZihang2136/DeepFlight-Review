@@ -506,15 +506,26 @@ class LogAnalyzer:
         return result
 
     def compute_psd(self, topic: str, field: str, t0: float = None, t1: float = None):
-        sig = self.get_signal(topic, field, t0=t0, t1=t1)
-        if sig.empty or len(sig) < 16:
+        """计算功率谱密度 (Flight Review 标准)"""
+        # 使用原始微秒 timestamp
+        multi = self.get_multi_axis_signal(topic, [field], t0=t0, t1=t1, use_raw_timestamp=True)
+        if multi.empty or "timestamp" not in multi.columns or field not in multi.columns:
             return pd.DataFrame(columns=["freq_hz", "psd"])
-        t = sig["timestamp"].to_numpy(dtype=float)
-        y = sig["value"].to_numpy(dtype=float)
-        dt = np.median(np.diff(t))
-        if not np.isfinite(dt) or dt <= 0:
+
+        t = multi["timestamp"].to_numpy(dtype=np.int64)
+        y = multi[field].to_numpy(dtype=float)
+
+        mask = np.isfinite(y)
+        y = y[mask]
+        if len(y) < 16:
             return pd.DataFrame(columns=["freq_hz", "psd"])
-        fs = 1.0 / dt
+
+        # 使用相邻时间差的中位数计算 delta_t
+        delta_t = np.median(np.diff(t.astype(float))) * 1e-6  # 微秒转秒
+        if delta_t <= 0:
+            return pd.DataFrame(columns=["freq_hz", "psd"])
+
+        fs = 1.0 / delta_t
         y = y - np.mean(y)
         try:
             from scipy.signal import welch
@@ -524,7 +535,7 @@ class LogAnalyzer:
         except Exception:
             # scipy 不可用时退化到简单周期图
             n = len(y)
-            freq = np.fft.rfftfreq(n, d=dt)
+            freq = np.fft.rfftfreq(n, d=delta_t)
             yf = np.fft.rfft(y)
             psd = (np.abs(yf) ** 2) / (fs * n)
         return pd.DataFrame({"freq_hz": freq, "psd": psd})
@@ -532,59 +543,110 @@ class LogAnalyzer:
     def compute_spectrogram(
         self,
         topic: str,
-        field: str,
+        fields: List[str],
         t0: float = None,
         t1: float = None,
-        nperseg: int = 512,
-        noverlap: int = 256,
+        nperseg: int = 256,
+        noverlap: int = 128,
     ):
-        """返回时频谱长表: time_s, freq_hz, power_db。"""
-        key = ("spectrogram", topic, field, t0, t1, nperseg, noverlap)
+        """返回时频谱长表: time_s, freq_hz, power_db (Flight Review 标准)
+
+        Flight Review 标准实现:
+        - delta_t = ((t[-1] - t[0]) * 1e-6) / len(t)  (总时间 / 点数)
+        - sampling_frequency = int(1.0 / delta_t)  (取整)
+        - 对多轴数据分别计算 spectrogram，然后求和
+        - 不做预先降采样
+        """
+        key = ("spectrogram_v4", topic, tuple(fields), t0, t1, nperseg, noverlap)
         if key in self.analysis_cache:
             return self.analysis_cache[key]
 
-        sig = self.get_signal(topic, field, t0=t0, t1=t1)
-        if sig.empty or len(sig) < 64:
+        # 使用原始微秒 timestamp，不做降采样
+        multi = self.get_multi_axis_signal(topic, fields, t0=t0, t1=t1, use_raw_timestamp=True)
+        if multi.empty or "timestamp" not in multi.columns:
             out = pd.DataFrame(columns=["time_s", "freq_hz", "power_db"])
             self.analysis_cache[key] = out
             return out
 
-        step = self._resample_step(len(sig), max_points=120000)
-        if step > 1:
-            sig = sig.iloc[::step, :]
-        t = sig["timestamp"].to_numpy(dtype=float)
-        y = sig["value"].to_numpy(dtype=float)
-        dt = self._estimate_dt(t)
-        if dt is None:
+        t = multi["timestamp"].to_numpy(dtype=np.int64)
+        if len(t) < 64:
             out = pd.DataFrame(columns=["time_s", "freq_hz", "power_db"])
             self.analysis_cache[key] = out
             return out
 
-        y = y - np.mean(y)
-        fs = 1.0 / dt
-        nseg = int(min(max(64, nperseg), len(y)))
-        nov = int(min(max(0, noverlap), nseg - 1))
+        # Flight Review 标准: 使用总时间 / 点数计算 delta_t
+        # (Note: logging dropouts are not taken into account here)
+        delta_t = ((t[-1] - t[0]) * 1.0e-6) / len(t)
+        if delta_t < 0.000001:  # avoid division by zero
+            out = pd.DataFrame(columns=["time_s", "freq_hz", "power_db"])
+            self.analysis_cache[key] = out
+            return out
+
+        # Flight Review 标准: 采样频率取整
+        sampling_frequency = int(1.0 / delta_t)
+
+        # Flight Review 标准: 采样频率必须 >= 100Hz
+        if sampling_frequency < 100:
+            out = pd.DataFrame(columns=["time_s", "freq_hz", "power_db"])
+            self.analysis_cache[key] = out
+            return out
+
+        # 记录原始起始时间（用于时间轴转换）
+        t_start = float(t[0])
 
         try:
             from scipy.signal import spectrogram
 
-            f_hz, t_rel, pxx = spectrogram(
-                y,
-                fs=fs,
-                window="hann",
-                nperseg=nseg,
-                noverlap=nov,
-                detrend=False,
-                scaling="density",
-                mode="psd",
-            )
-        except Exception:
+            # Flight Review 标准: 对每个轴计算 spectrogram，然后求和
+            sum_pxx = None
+            f_hz = None
+            t_rel = None
+
+            for field in fields:
+                if field not in multi.columns:
+                    continue
+                y = multi[field].to_numpy(dtype=float)
+
+                # scipy.signal.spectrogram 会自动去除均值吗？不会，但scaling='density'会处理
+                f, t_spec, pxx = spectrogram(
+                    y,
+                    fs=sampling_frequency,
+                    window='hann',
+                    nperseg=nperseg,
+                    noverlap=noverlap,
+                    scaling='density',
+                )
+
+                if sum_pxx is None:
+                    sum_pxx = pxx.copy()
+                    f_hz = f
+                    t_rel = t_spec
+                else:
+                    sum_pxx += pxx  # 累加 PSD
+
+            if sum_pxx is None:
+                out = pd.DataFrame(columns=["time_s", "freq_hz", "power_db"])
+                self.analysis_cache[key] = out
+                return out
+
+        except Exception as e:
+            print(f"[Spectrogram Error] {e}")
             out = pd.DataFrame(columns=["time_s", "freq_hz", "power_db"])
             self.analysis_cache[key] = out
             return out
 
-        power_db = 10.0 * np.log10(np.maximum(pxx, 1e-15))
-        t_abs = t_rel + float(sig["timestamp"].iloc[0])
+        # Flight Review 标准: 转换为 dB
+        power_db = 10.0 * np.log10(sum_pxx)
+
+        # 处理 -inf 值（Bokeh/JSON 不支持 -inf）
+        if -np.inf in power_db:
+            finite_min = np.min(np.ma.masked_invalid(power_db))
+            power_db[power_db == -np.inf] = finite_min
+
+        # 时间轴转换：t_rel 是相对时间（秒），需要加上数据的起始时间（秒）
+        t_start_sec = t_start * 1e-6
+        t_abs = t_rel + t_start_sec
+
         tt, ff = np.meshgrid(t_abs, f_hz)
         out = pd.DataFrame(
             {
@@ -593,6 +655,12 @@ class LogAnalyzer:
                 "power_db": power_db.ravel(),
             }
         )
+
+        # 调试信息
+        print(f"[Spectrogram Debug] topic={topic}, fields={fields}, "
+              f"n={len(t)}, delta_t={delta_t*1e6:.2f}us, fs={sampling_frequency}Hz, "
+              f"freq_range=[{f_hz[0]:.2f}, {f_hz[-1]:.2f}]Hz")
+
         self.analysis_cache[key] = out
         return out
 
