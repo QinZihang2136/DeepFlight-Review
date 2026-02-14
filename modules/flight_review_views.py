@@ -113,25 +113,45 @@ def _plot_group(analyzer, group, t0, t1, use_downsample, show_rangeslider, mode_
         if sp_df is not None and "timestamp" in sp_df.columns:
             sp_df = sp_df[(sp_df["timestamp"] >= t0) & (sp_df["timestamp"] <= t1)]
 
-    # 绘制 Estimated（实线）
-    for idx, (col, name) in enumerate(valid):
-        fig.add_trace(go.Scatter(
-            x=df["timestamp"], y=df[col],
-            name=name,
-            line=dict(width=1.5, color=px.colors.qualitative.Plotly[idx % 10]),
-            legendgroup=name
-        ))
+    # Flight Review 标准颜色
+    # Setpoint = 绿色实线, Estimated = 橙色实线
+    ESTIMATED_COLOR = "#FF7F0E"  # 橙色 (Plotly 橙)
+    SETPOINT_COLOR = "#2CA02C"   # 绿色 (Plotly 绿)
 
-        # 如果有 setpoint 数据，绘制 Setpoint（虚线）
-        if sp_df is not None and not sp_df.empty and idx < len(setpoint_signals):
-            sp_col, sp_name = setpoint_signals[idx]
-            if sp_col in sp_df.columns:
-                fig.add_trace(go.Scatter(
-                    x=sp_df["timestamp"], y=sp_df[sp_col],
-                    name=f"{sp_name}",
-                    line=dict(width=1.5, dash="dash", color=px.colors.qualitative.Plotly[idx % 10]),
-                    legendgroup=name
-                ))
+    has_setpoint = sp_df is not None and not sp_df.empty and len(setpoint_signals) > 0
+
+    # 如果有 setpoint，先绘制 Setpoint（绿色），再绘制 Estimated（橙色）
+    # 这样 Estimated 会显示在上层，便于对比
+    if has_setpoint:
+        for idx, (col, name) in enumerate(valid):
+            # 先绘制 Setpoint（绿色实线）
+            if idx < len(setpoint_signals):
+                sp_col, sp_name = setpoint_signals[idx]
+                if sp_col in sp_df.columns:
+                    fig.add_trace(go.Scatter(
+                        x=sp_df["timestamp"], y=sp_df[sp_col],
+                        name=f"{name}_sp",
+                        line=dict(width=1.5, color=SETPOINT_COLOR),
+                        legendgroup=name,
+                        showlegend=(idx == 0),  # 只显示一个图例
+                    ))
+
+            # 再绘制 Estimated（橙色实线）
+            fig.add_trace(go.Scatter(
+                x=df["timestamp"], y=df[col],
+                name=name,
+                line=dict(width=1.5, color=ESTIMATED_COLOR),
+                legendgroup=name,
+                showlegend=(idx == 0),  # 只显示一个图例
+            ))
+    else:
+        # 没有 setpoint，使用原来的多彩显示
+        for idx, (col, name) in enumerate(valid):
+            fig.add_trace(go.Scatter(
+                x=df["timestamp"], y=df[col],
+                name=name,
+                line=dict(width=1.5, color=px.colors.qualitative.Plotly[idx % 10]),
+            ))
 
     fig.update_layout(
         height=300,
@@ -148,6 +168,10 @@ def _plot_group(analyzer, group, t0, t1, use_downsample, show_rangeslider, mode_
         plot_bgcolor="rgba(250,250,250,1)",
     )
     st.plotly_chart(fig, width="stretch", config={"scrollZoom": True, "displaylogo": False})
+
+    # 如果有 setpoint，添加图例说明
+    if has_setpoint:
+        st.caption(f"🟢 Setpoint (目标值)  |  🟠 Estimated (实际值)")
 
 
 def _render_status_cards(summary):
