@@ -120,8 +120,8 @@ def _plot_group(analyzer, group, t0, t1, use_downsample, show_rangeslider, mode_
 
     has_setpoint = sp_df is not None and not sp_df.empty and len(setpoint_signals) > 0
 
-    # 如果有 setpoint，先绘制 Setpoint（绿色），再绘制 Estimated（橙色）
-    # 这样 Estimated 会显示在上层，便于对比
+    # 如果有 setpoint，分别绘制每个轴的 Setpoint 和 Estimated
+    # 图例独立显示，可以单独显示/隐藏
     if has_setpoint:
         for idx, (col, name) in enumerate(valid):
             # 先绘制 Setpoint（绿色实线）
@@ -130,10 +130,9 @@ def _plot_group(analyzer, group, t0, t1, use_downsample, show_rangeslider, mode_
                 if sp_col in sp_df.columns:
                     fig.add_trace(go.Scatter(
                         x=sp_df["timestamp"], y=sp_df[sp_col],
-                        name=f"{name}_sp",
+                        name=sp_name,
                         line=dict(width=1.5, color=SETPOINT_COLOR),
-                        legendgroup=name,
-                        showlegend=(idx == 0),  # 只显示一个图例
+                        showlegend=True,
                     ))
 
             # 再绘制 Estimated（橙色实线）
@@ -141,8 +140,7 @@ def _plot_group(analyzer, group, t0, t1, use_downsample, show_rangeslider, mode_
                 x=df["timestamp"], y=df[col],
                 name=name,
                 line=dict(width=1.5, color=ESTIMATED_COLOR),
-                legendgroup=name,
-                showlegend=(idx == 0),  # 只显示一个图例
+                showlegend=True,
             ))
     else:
         # 没有 setpoint，使用原来的多彩显示

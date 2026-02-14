@@ -62,14 +62,14 @@ FLIGHT_REVIEW_GROUPS = [
         "topic_candidates": ["vehicle_attitude"],
         "setpoint_topic": "vehicle_attitude_setpoint",
         "signals": [
-            ("roll_deg", "roll"),
-            ("pitch_deg", "pitch"),
-            ("yaw_deg", "yaw"),
+            ("roll_deg", "Roll"),
+            ("pitch_deg", "Pitch"),
+            ("yaw_deg", "Yaw"),
         ],
         "setpoint_signals": [
-            ("roll_body", "roll_sp"),
-            ("pitch_body", "pitch_sp"),
-            ("yaw_body", "yaw_sp"),
+            ("roll_body_deg", "Roll SP"),
+            ("pitch_body_deg", "Pitch SP"),
+            ("yaw_body_deg", "Yaw SP"),
         ],
     },
     {
@@ -79,14 +79,14 @@ FLIGHT_REVIEW_GROUPS = [
         "topic_candidates": ["vehicle_angular_velocity"],
         "setpoint_topic": "vehicle_rates_setpoint",
         "signals": [
-            ("xyz[0]_deg", "roll_rate"),
-            ("xyz[1]_deg", "pitch_rate"),
-            ("xyz[2]_deg", "yaw_rate"),
+            ("xyz[0]_deg", "Roll Rate"),
+            ("xyz[1]_deg", "Pitch Rate"),
+            ("xyz[2]_deg", "Yaw Rate"),
         ],
         "setpoint_signals": [
-            ("roll", "roll_rate_sp"),
-            ("pitch", "pitch_rate_sp"),
-            ("yaw", "yaw_rate_sp"),
+            ("roll_deg", "Roll Rate SP"),
+            ("pitch_deg", "Pitch Rate SP"),
+            ("yaw_deg", "Yaw Rate SP"),
         ],
     },
     {
