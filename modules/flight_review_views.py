@@ -3,6 +3,7 @@ Flight Review 风格飞行概览页面渲染器。
 """
 
 import pandas as pd
+import plotly.express as px
 import plotly.graph_objects as go
 import streamlit as st
 
@@ -76,20 +77,61 @@ def _plot_group(analyzer, group, t0, t1, use_downsample, show_rangeslider, mode_
         dynamic = [c for c in df.columns if c != "timestamp" and ("output" in c or "control" in c)]
         signals = [(c, c) for c in dynamic[:16]]
     elif group["key"] == "rc":
-        dynamic = [c for c in df.columns if c != "timestamp" and ("channel" in c or "x" == c or "y" == c or "z" == c or "r" == c)]
+        # 扩展字段匹配，支持更多命名方式（Flight Review 兼容）
+        dynamic = [c for c in df.columns if c != "timestamp" and (
+            "channel" in c.lower() or
+            c in ["x", "y", "z", "r"] or
+            c in ["roll", "pitch", "yaw", "throttle"] or
+            "values" in c.lower() or
+            c.startswith("sticks") or
+            c in ["aux1", "aux2", "aux3", "aux4", "aux5", "aux6"]
+        )]
         signals = [(c, c) for c in dynamic[:12]]
+        if not signals:
+            # 如果没找到匹配字段，显示所有数值字段
+            dynamic = [c for c in df.columns if c != "timestamp" and df[c].dtype.kind in "iufb"]
+            signals = [(c, c) for c in dynamic[:8]]
     else:
         signals = group["signals"]
 
     valid = [(col, name) for col, name in signals if col in df.columns]
     if not valid:
         st.info(f"无可用字段: topic={topic}, expected={[s[0] for s in signals]}")
+        st.caption(f"实际可用字段: {[c for c in df.columns if c != 'timestamp'][:10]}")
         return
 
     fig = go.Figure()
     _add_mode_background(fig, mode_segments, t0, t1)
-    for col, name in valid:
-        fig.add_trace(go.Scatter(x=df["timestamp"], y=df[col], name=f"{topic}.{name}", line=dict(width=1.4)))
+
+    # 检查是否有 setpoint 配置
+    setpoint_topic = group.get("setpoint_topic")
+    setpoint_signals = group.get("setpoint_signals", [])
+    sp_df = None
+
+    if setpoint_topic:
+        sp_df = analyzer.get_topic(setpoint_topic, downsample=use_downsample)
+        if sp_df is not None and "timestamp" in sp_df.columns:
+            sp_df = sp_df[(sp_df["timestamp"] >= t0) & (sp_df["timestamp"] <= t1)]
+
+    # 绘制 Estimated（实线）
+    for idx, (col, name) in enumerate(valid):
+        fig.add_trace(go.Scatter(
+            x=df["timestamp"], y=df[col],
+            name=name,
+            line=dict(width=1.5, color=px.colors.qualitative.Plotly[idx % 10]),
+            legendgroup=name
+        ))
+
+        # 如果有 setpoint 数据，绘制 Setpoint（虚线）
+        if sp_df is not None and not sp_df.empty and idx < len(setpoint_signals):
+            sp_col, sp_name = setpoint_signals[idx]
+            if sp_col in sp_df.columns:
+                fig.add_trace(go.Scatter(
+                    x=sp_df["timestamp"], y=sp_df[sp_col],
+                    name=f"{sp_name}",
+                    line=dict(width=1.5, dash="dash", color=px.colors.qualitative.Plotly[idx % 10]),
+                    legendgroup=name
+                ))
 
     fig.update_layout(
         height=300,
@@ -167,17 +209,42 @@ def _build_cutoff_param_map(analyzer):
 def _render_gps_noise_jamming_panel(analyzer, t0, t1, mode_segments):
     st.markdown("#### GPS Noise & Jamming")
     df = analyzer.get_gps_noise_jamming(t0=t0, t1=t1)
+
     if df.empty:
-        st.info("缺失 GPS 噪声字段: 期望 noise_per_ms / jamming_indicator")
+        st.info("GPS 噪声/干扰数据不可用")
+        st.caption("可能原因：GPS 接收器不支持此功能或日志格式不兼容")
+        # 显示 GPS topic 的可用字段
+        gps_topics = [t for t in analyzer.get_available_topics() if "gps" in t.lower()]
+        if gps_topics:
+            st.caption(f"可用 GPS topics: {gps_topics[:3]}")
         return
+
+    # 检查数据是否全为空或 0
+    noise_valid = "noise_per_ms" in df.columns and df["noise_per_ms"].notna().any()
+    jam_valid = "jamming_indicator" in df.columns and df["jamming_indicator"].notna().any()
+
+    if not noise_valid and not jam_valid:
+        st.warning("GPS 噪声/干扰数据存在但全为空值")
+        st.caption(f"返回字段: {list(df.columns)}")
+        return
+
     fig = go.Figure()
     _add_mode_background(fig, mode_segments, t0, t1)
+
+    has_traces = False
     if "noise_per_ms" in df.columns and df["noise_per_ms"].notna().any():
         fig.add_trace(go.Scatter(x=df["timestamp"], y=df["noise_per_ms"], name="Noise per ms", line=dict(width=1.4)))
+        has_traces = True
     if "jamming_indicator" in df.columns and df["jamming_indicator"].notna().any():
         fig.add_trace(
             go.Scatter(x=df["timestamp"], y=df["jamming_indicator"], name="Jamming Indicator", line=dict(width=1.4))
         )
+        has_traces = True
+
+    if not has_traces:
+        st.info("GPS 噪声/干扰数据中没有有效值")
+        return
+
     fig.update_layout(
         height=300,
         margin=dict(l=0, r=0, t=20, b=0),
@@ -187,6 +254,8 @@ def _render_gps_noise_jamming_panel(analyzer, t0, t1, mode_segments):
         legend=dict(orientation="h", yanchor="bottom", y=1.01, xanchor="left", x=0),
     )
     st.plotly_chart(fig, width="stretch", config={"scrollZoom": True, "displaylogo": False})
+    # 添加 Flight Review 标准参考
+    st.caption("参考: Jamming Indicator ≤40 正常, ≥80 需检查")
 
 
 def _render_thrust_magnetic_panel(analyzer, t0, t1, mode_segments):

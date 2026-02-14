@@ -57,24 +57,36 @@ FLIGHT_REVIEW_GROUPS = [
     },
     {
         "key": "attitude",
-        "title": "Attitude",
+        "title": "Attitude (with Setpoint)",
         "expanded": True,
         "topic_candidates": ["vehicle_attitude"],
+        "setpoint_topic": "vehicle_attitude_setpoint",
         "signals": [
             ("roll_deg", "roll"),
             ("pitch_deg", "pitch"),
             ("yaw_deg", "yaw"),
         ],
+        "setpoint_signals": [
+            ("roll_body", "roll_sp"),
+            ("pitch_body", "pitch_sp"),
+            ("yaw_body", "yaw_sp"),
+        ],
     },
     {
         "key": "rates",
-        "title": "Rates",
+        "title": "Rates (with Setpoint)",
         "expanded": True,
         "topic_candidates": ["vehicle_angular_velocity"],
+        "setpoint_topic": "vehicle_rates_setpoint",
         "signals": [
             ("xyz[0]_deg", "roll_rate"),
             ("xyz[1]_deg", "pitch_rate"),
             ("xyz[2]_deg", "yaw_rate"),
+        ],
+        "setpoint_signals": [
+            ("roll", "roll_rate_sp"),
+            ("pitch", "pitch_rate_sp"),
+            ("yaw", "yaw_rate_sp"),
         ],
     },
     {
