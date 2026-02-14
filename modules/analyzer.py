@@ -599,7 +599,17 @@ class LogAnalyzer:
         if not chosen:
             return None
         mag = np.sqrt((df[chosen[0]].astype(float) ** 2) + (df[chosen[1]].astype(float) ** 2) + (df[chosen[2]].astype(float) ** 2))
-        out = pd.DataFrame({"timestamp": df["timestamp"], "mag_norm": mag})
+
+        # Flight Review 标准：归一化磁场范数到 0-1 范围
+        # 使用前 5% 数据的平均值作为参考值进行归一化
+        n_samples = max(10, int(len(mag) * 0.05))
+        ref_value = float(np.nanmean(mag[:n_samples]))
+        if ref_value > 0:
+            mag_normalized = mag / ref_value
+        else:
+            mag_normalized = mag
+
+        out = pd.DataFrame({"timestamp": df["timestamp"], "mag_norm": mag_normalized})
         return out
 
     def get_thrust_and_magnetic(self, t0: float = None, t1: float = None):
