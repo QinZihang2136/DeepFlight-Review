@@ -114,7 +114,7 @@ def _plot_group(analyzer, group, t0, t1, use_downsample, show_rangeslider, mode_
             sp_df = sp_df[(sp_df["timestamp"] >= t0) & (sp_df["timestamp"] <= t1)]
 
     # Flight Review 标准颜色
-    # Setpoint = 绿色实线, Estimated = 橙色实线
+    # Setpoint = 绿色虚线, Estimated = 橙色实线
     ESTIMATED_COLOR = "#FF7F0E"  # 橙色 (Plotly 橙)
     SETPOINT_COLOR = "#2CA02C"   # 绿色 (Plotly 绿)
 
@@ -124,14 +124,14 @@ def _plot_group(analyzer, group, t0, t1, use_downsample, show_rangeslider, mode_
     # 图例独立显示，可以单独显示/隐藏
     if has_setpoint:
         for idx, (col, name) in enumerate(valid):
-            # 先绘制 Setpoint（绿色实线）
+            # 先绘制 Setpoint（绿色虚线）
             if idx < len(setpoint_signals):
                 sp_col, sp_name = setpoint_signals[idx]
                 if sp_col in sp_df.columns:
                     fig.add_trace(go.Scatter(
                         x=sp_df["timestamp"], y=sp_df[sp_col],
                         name=sp_name,
-                        line=dict(width=1.5, color=SETPOINT_COLOR),
+                        line=dict(width=1.5, color=SETPOINT_COLOR, dash="dash"),
                         showlegend=True,
                     ))
 
@@ -151,25 +151,38 @@ def _plot_group(analyzer, group, t0, t1, use_downsample, show_rangeslider, mode_
                 line=dict(width=1.5, color=px.colors.qualitative.Plotly[idx % 10]),
             ))
 
+    # Flight Review 标准图表样式
     fig.update_layout(
         height=300,
-        margin=dict(l=0, r=0, t=30, b=0),
+        margin=dict(l=50, r=20, t=20, b=40),
         hovermode="x unified",
         xaxis=dict(
             showgrid=True,
-            gridcolor="rgba(0,0,0,0.08)",
+            gridcolor="#e8e8e8",
             rangeslider=dict(visible=show_rangeslider),
             range=[float(t0), float(t1)],
         ),
-        yaxis=dict(showgrid=True, gridcolor="rgba(0,0,0,0.08)"),
-        legend=dict(orientation="h", yanchor="bottom", y=1.01, xanchor="left", x=0),
-        plot_bgcolor="rgba(250,250,250,1)",
+        yaxis=dict(showgrid=True, gridcolor="#e8e8e8"),
+        # 图例放在图表内部右上角（Flight Review 风格）
+        legend=dict(
+            orientation="v",
+            yanchor="top",
+            y=0.98,
+            xanchor="right",
+            x=0.99,
+            bgcolor="rgba(255,255,255,0.7)",
+            bordercolor="#ddd",
+            borderwidth=1,
+            font=dict(size=10),
+        ),
+        # 白色背景（Flight Review 风格）
+        plot_bgcolor="white",
     )
     st.plotly_chart(fig, width="stretch", config={"scrollZoom": True, "displaylogo": False})
 
     # 如果有 setpoint，添加图例说明
     if has_setpoint:
-        st.caption(f"🟢 Setpoint (目标值)  |  🟠 Estimated (实际值)")
+        st.caption(f"🟢 --- Setpoint (目标值)  |  🟠 Estimated (实际值)")
 
 
 def _render_status_cards(summary):
@@ -267,13 +280,25 @@ def _render_gps_noise_jamming_panel(analyzer, t0, t1, mode_segments):
         st.info("GPS 噪声/干扰数据中没有有效值")
         return
 
+    # Flight Review 标准图表样式
     fig.update_layout(
         height=300,
-        margin=dict(l=0, r=0, t=20, b=0),
+        margin=dict(l=50, r=20, t=20, b=40),
         hovermode="x unified",
-        xaxis=dict(showgrid=True, gridcolor="rgba(0,0,0,0.08)", range=[float(t0), float(t1)]),
-        yaxis=dict(showgrid=True, gridcolor="rgba(0,0,0,0.08)"),
-        legend=dict(orientation="h", yanchor="bottom", y=1.01, xanchor="left", x=0),
+        xaxis=dict(showgrid=True, gridcolor="#e8e8e8", range=[float(t0), float(t1)]),
+        yaxis=dict(showgrid=True, gridcolor="#e8e8e8"),
+        legend=dict(
+            orientation="v",
+            yanchor="top",
+            y=0.98,
+            xanchor="right",
+            x=0.99,
+            bgcolor="rgba(255,255,255,0.7)",
+            bordercolor="#ddd",
+            borderwidth=1,
+            font=dict(size=10),
+        ),
+        plot_bgcolor="white",
     )
     st.plotly_chart(fig, width="stretch", config={"scrollZoom": True, "displaylogo": False})
     # 添加 Flight Review 标准参考
@@ -281,26 +306,69 @@ def _render_gps_noise_jamming_panel(analyzer, t0, t1, mode_segments):
 
 
 def _render_thrust_magnetic_panel(analyzer, t0, t1, mode_segments):
+    """Render Thrust & Magnetic Field chart (Flight Review standard).
+
+    Flight Review uses a single Y-axis (0-1 range) with both signals normalized.
+    Colors: Green = Thrust, Red = Norm of Magnetic Field
+    """
     st.markdown("#### Thrust & Magnetic Field")
     df = analyzer.get_thrust_and_magnetic(t0=t0, t1=t1)
     if df.empty:
         st.info("缺失推力或磁场数据: 期望 actuator_controls/actuator_motors + sensor_mag")
         return
+
     fig = go.Figure()
     _add_mode_background(fig, mode_segments, t0, t1)
-    if "thrust" in df.columns and df["thrust"].notna().any():
-        fig.add_trace(go.Scatter(x=df["timestamp"], y=df["thrust"], name="Thrust", line=dict(width=1.4)))
-    if "mag_norm" in df.columns and df["mag_norm"].notna().any():
-        fig.add_trace(go.Scatter(x=df["timestamp"], y=df["mag_norm"], name="Norm of Magnetic Field", line=dict(width=1.4)))
+
+    has_thrust = "thrust" in df.columns and df["thrust"].notna().any()
+    has_mag = "mag_norm" in df.columns and df["mag_norm"].notna().any()
+
+    # Flight Review standard colors
+    THRUST_COLOR = "#2ca02c"  # Green (Flight Review standard)
+    MAG_NORM_COLOR = "#d62728"  # Red (Flight Review standard)
+
+    if has_thrust:
+        fig.add_trace(go.Scatter(
+            x=df["timestamp"],
+            y=df["thrust"],
+            name="Thrust",
+            line=dict(width=1.5, color=THRUST_COLOR),
+        ))
+
+    if has_mag:
+        fig.add_trace(go.Scatter(
+            x=df["timestamp"],
+            y=df["mag_norm"],
+            name="Norm of Magnetic Field",
+            line=dict(width=1.5, color=MAG_NORM_COLOR),
+        ))
+
+    if not has_thrust and not has_mag:
+        st.info("推力和磁场数据中没有有效值")
+        return
+
+    # Flight Review 标准图表样式
     fig.update_layout(
         height=300,
-        margin=dict(l=0, r=0, t=20, b=0),
+        margin=dict(l=50, r=20, t=20, b=40),
         hovermode="x unified",
-        xaxis=dict(showgrid=True, gridcolor="rgba(0,0,0,0.08)", range=[float(t0), float(t1)]),
-        yaxis=dict(showgrid=True, gridcolor="rgba(0,0,0,0.08)"),
-        legend=dict(orientation="h", yanchor="bottom", y=1.01, xanchor="left", x=0),
+        xaxis=dict(showgrid=True, gridcolor="#e8e8e8", range=[float(t0), float(t1)]),
+        yaxis=dict(showgrid=True, gridcolor="#e8e8e8"),
+        legend=dict(
+            orientation="v",
+            yanchor="top",
+            y=0.98,
+            xanchor="right",
+            x=0.99,
+            bgcolor="rgba(255,255,255,0.7)",
+            bordercolor="#ddd",
+            borderwidth=1,
+            font=dict(size=10),
+        ),
+        plot_bgcolor="white",
     )
     st.plotly_chart(fig, width="stretch", config={"scrollZoom": True, "displaylogo": False})
+    st.caption("参考: 磁场范数应保持恒定且与推力无关。若相关联则表示电机电流影响罗盘。")
 
 
 def _render_fft_panel(analyzer, panel_title, candidates, t0, t1, cutoff_map=None):
@@ -340,13 +408,25 @@ def _render_fft_panel(analyzer, panel_title, candidates, t0, t1, cutoff_map=None
             fig.add_vline(x=x, line_dash="dash", line_color="rgba(20,20,20,0.65)")
             fig.add_annotation(x=x, y=1.0, xref="x", yref="paper", text=p, showarrow=False, yanchor="bottom")
 
+    # Flight Review 标准图表样式
     fig.update_layout(
         height=320,
-        margin=dict(l=0, r=0, t=20, b=0),
+        margin=dict(l=50, r=20, t=20, b=40),
         hovermode="x unified",
-        xaxis=dict(showgrid=True, gridcolor="rgba(0,0,0,0.08)", title="Hz"),
-        yaxis=dict(showgrid=True, gridcolor="rgba(0,0,0,0.08)", title="Amplitude"),
-        legend=dict(orientation="h", yanchor="bottom", y=1.01, xanchor="left", x=0),
+        xaxis=dict(showgrid=True, gridcolor="#e8e8e8", title="Hz"),
+        yaxis=dict(showgrid=True, gridcolor="#e8e8e8", title="Amplitude"),
+        legend=dict(
+            orientation="v",
+            yanchor="top",
+            y=0.98,
+            xanchor="right",
+            x=0.99,
+            bgcolor="rgba(255,255,255,0.7)",
+            bordercolor="#ddd",
+            borderwidth=1,
+            font=dict(size=10),
+        ),
+        plot_bgcolor="white",
     )
     st.plotly_chart(fig, width="stretch", config={"scrollZoom": True, "displaylogo": False})
 
@@ -373,11 +453,13 @@ def _render_single_spectrogram(analyzer, panel_title, topic, field, t0, t1, max_
             colorbar=dict(title="[dB]"),
         )
     )
+    # Flight Review 标准图表样式
     fig.update_layout(
         height=340,
-        margin=dict(l=0, r=0, t=20, b=0),
-        xaxis=dict(title="Time [s]", range=[float(t0), float(t1)]),
-        yaxis=dict(title="Hz"),
+        margin=dict(l=50, r=20, t=20, b=40),
+        xaxis=dict(title="Time [s]", range=[float(t0), float(t1)], showgrid=True, gridcolor="#e8e8e8"),
+        yaxis=dict(title="Hz", showgrid=True, gridcolor="#e8e8e8"),
+        plot_bgcolor="white",
     )
     st.plotly_chart(fig, width="stretch", config={"scrollZoom": True, "displaylogo": False})
 
@@ -445,7 +527,14 @@ def _render_frequency(analyzer, t0, t1):
         else:
             fig = go.Figure()
             fig.add_trace(go.Scatter(x=fft_df["freq_hz"], y=fft_df["amplitude"], name="FFT amplitude"))
-            fig.update_layout(height=260, margin=dict(l=0, r=0, t=25, b=0), xaxis_title="Hz")
+            fig.update_layout(
+                height=260,
+                margin=dict(l=50, r=20, t=25, b=40),
+                xaxis_title="Hz",
+                xaxis=dict(showgrid=True, gridcolor="#e8e8e8"),
+                yaxis=dict(showgrid=True, gridcolor="#e8e8e8"),
+                plot_bgcolor="white",
+            )
             st.plotly_chart(fig, width="stretch", config={"scrollZoom": True, "displaylogo": False})
     with c2:
         if psd_df.empty:
@@ -453,7 +542,14 @@ def _render_frequency(analyzer, t0, t1):
         else:
             fig = go.Figure()
             fig.add_trace(go.Scatter(x=psd_df["freq_hz"], y=psd_df["psd"], name="PSD"))
-            fig.update_layout(height=260, margin=dict(l=0, r=0, t=25, b=0), xaxis_title="Hz")
+            fig.update_layout(
+                height=260,
+                margin=dict(l=50, r=20, t=25, b=40),
+                xaxis_title="Hz",
+                xaxis=dict(showgrid=True, gridcolor="#e8e8e8"),
+                yaxis=dict(showgrid=True, gridcolor="#e8e8e8"),
+                plot_bgcolor="white",
+            )
             st.plotly_chart(fig, width="stretch", config={"scrollZoom": True, "displaylogo": False})
 
 
