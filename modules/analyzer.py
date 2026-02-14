@@ -560,14 +560,45 @@ class LogAnalyzer:
         return out.replace([np.inf, -np.inf], np.nan).dropna(how="all", subset=["noise_per_ms", "jamming_indicator"])
 
     def _get_thrust_series(self):
-        topic = self._pick_topic_by_prefix(["actuator_controls", "actuator_motors"])
+        """返回推力数据 (Flight Review 标准)
+
+        Flight Review 的推力计算逻辑:
+        1. 如果使用动态控制分配 (有 actuator_motors/actuator_servos):
+           - 从 vehicle_thrust_setpoint 获取 xyz[0/1/2]，计算范数 sqrt(x²+y²+z²)
+        2. 否则 (传统控制):
+           - 从 actuator_controls_0 获取 control[3]
+        """
+        # 检查是否使用动态控制分配
+        topic_names = sorted({d.name for d in self.ulog.data_list})
+        use_dynamic_control_alloc = any(
+            name in ("actuator_motors", "actuator_servos") for name in topic_names
+        )
+
+        if use_dynamic_control_alloc:
+            # 动态控制分配: 使用 vehicle_thrust_setpoint
+            thrust_topic = self._pick_topic_by_prefix(["vehicle_thrust_setpoint"])
+            if thrust_topic:
+                df = self.get_topic_data(thrust_topic, downsample=False)
+                if df is not None and "timestamp" in df.columns:
+                    if all(c in df.columns for c in ["xyz[0]", "xyz[1]", "xyz[2]"]):
+                        # 计算推力范数 (Flight Review 标准)
+                        thrust = np.sqrt(
+                            df["xyz[0]"].astype(float) ** 2
+                            + df["xyz[1]"].astype(float) ** 2
+                            + df["xyz[2]"].astype(float) ** 2
+                        )
+                        return pd.DataFrame({"timestamp": df["timestamp"], "thrust": thrust})
+
+        # 传统控制: 使用 actuator_controls_0
+        topic = self._pick_topic_by_prefix(["actuator_controls_0", "actuator_controls"])
         if not topic:
             return None
         df = self.get_topic_data(topic, downsample=False)
         if df is None or "timestamp" not in df.columns:
             return None
 
-        thrust_field = self._pick_field(df, ["thrust_body[2]", "control[3]", "thrust", "thrust_z"])
+        # Flight Review 优先使用 control[3]
+        thrust_field = self._pick_field(df, ["control[3]", "thrust_body[2]", "thrust", "thrust_z"])
         if thrust_field:
             out = pd.DataFrame({"timestamp": df["timestamp"], "thrust": df[thrust_field].astype(float)})
             return out
@@ -579,37 +610,35 @@ class LogAnalyzer:
         return out
 
     def _get_magnetic_series(self):
-        topic = self._pick_topic_by_prefix(["sensor_mag", "vehicle_magnetometer", "sensor_combined"])
+        """返回磁场范数数据 (严格按照 Flight Review 标准)
+
+        根据 docs/thrust_magnetic_field_plot.md 文档:
+        - Topic 优先级: vehicle_magnetometer > sensor_combined
+        - 字段: magnetometer_ga[0/1/2]
+        - 计算: sqrt(x² + y² + z²)，不做归一化
+        - 正常值范围: 0.25 - 0.65 gauss
+        """
+        # 按文档描述的优先级选择 topic
+        topic = self._pick_topic_by_prefix(["vehicle_magnetometer", "sensor_combined"])
         if not topic:
             return None
         df = self.get_topic_data(topic, downsample=False)
         if df is None or "timestamp" not in df.columns:
             return None
 
-        xyz_sets = [
-            ["magnetometer_ga[0]", "magnetometer_ga[1]", "magnetometer_ga[2]"],
-            ["magnetic_field_ga[0]", "magnetic_field_ga[1]", "magnetic_field_ga[2]"],
-            ["x", "y", "z"],
-        ]
-        chosen = None
-        for s in xyz_sets:
-            if all(c in df.columns for c in s):
-                chosen = s
-                break
-        if not chosen:
+        # 按文档描述使用 magnetometer_ga[0/1/2] 字段
+        mag_fields = ["magnetometer_ga[0]", "magnetometer_ga[1]", "magnetometer_ga[2]"]
+        if not all(f in df.columns for f in mag_fields):
             return None
-        mag = np.sqrt((df[chosen[0]].astype(float) ** 2) + (df[chosen[1]].astype(float) ** 2) + (df[chosen[2]].astype(float) ** 2))
 
-        # Flight Review 标准：归一化磁场范数到 0-1 范围
-        # 使用前 5% 数据的平均值作为参考值进行归一化
-        n_samples = max(10, int(len(mag) * 0.05))
-        ref_value = float(np.nanmean(mag[:n_samples]))
-        if ref_value > 0:
-            mag_normalized = mag / ref_value
-        else:
-            mag_normalized = mag
+        # 计算磁场范数 (Gauss) - 直接显示原始值，不做归一化
+        mag = np.sqrt(
+            df["magnetometer_ga[0]"].astype(float) ** 2
+            + df["magnetometer_ga[1]"].astype(float) ** 2
+            + df["magnetometer_ga[2]"].astype(float) ** 2
+        )
 
-        out = pd.DataFrame({"timestamp": df["timestamp"], "mag_norm": mag_normalized})
+        out = pd.DataFrame({"timestamp": df["timestamp"], "mag_norm": mag})
         return out
 
     def get_thrust_and_magnetic(self, t0: float = None, t1: float = None):
