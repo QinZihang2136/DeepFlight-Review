@@ -28,19 +28,36 @@ GYRO_AXIS_CANDIDATES = [
     {"topic": "vehicle_angular_velocity", "fields": ["xyz[0]", "xyz[1]", "xyz[2]"], "to_deg": True},
 ]
 
-ACTUATOR_FFT_CANDIDATES = [
-    {"topic_prefix": "actuator_controls", "fields": ["control[0]", "control[1]", "control[2]"], "labels": ["Roll", "Pitch", "Yaw"]},
-    {"topic": "vehicle_rates_setpoint", "fields": ["roll", "pitch", "yaw"], "labels": ["Roll", "Pitch", "Yaw"]},
+# Actuator Controls FFT 候选 (按 Flight Review 标准)
+# 1. 传统模式: actuator_controls_0 + control[0/1/2]
+# 2. 动态控制分配: vehicle_torque_setpoint + xyz[0/1/2] (需检测 actuator_motors/actuator_servos)
+ACTUATOR_FFT_CANDIDATES_TRADITIONAL = [
+    {"topic": "actuator_controls_0", "fields": ["control[0]", "control[1]", "control[2]"], "labels": ["Roll", "Pitch", "Yaw"]},
 ]
 
+ACTUATOR_FFT_CANDIDATES_DYNAMIC = [
+    {"topic": "vehicle_torque_setpoint", "fields": ["xyz[0]", "xyz[1]", "xyz[2]"], "labels": ["Roll", "Pitch", "Yaw"]},
+]
+
+# 兼容旧接口 (将在运行时根据动态控制分配检测选择)
+ACTUATOR_FFT_CANDIDATES = ACTUATOR_FFT_CANDIDATES_TRADITIONAL
+
+# Angular Velocity FFT 候选 (按 Flight Review 标准)
+# 只使用 vehicle_angular_velocity，不需要备用 topic
 ANGULAR_RATE_FFT_CANDIDATES = [
     {"topic": "vehicle_angular_velocity", "fields": ["xyz[0]", "xyz[1]", "xyz[2]"], "labels": ["Rollspeed", "Pitchspeed", "Yawspeed"], "to_deg": True},
-    {"topic": "vehicle_rates_setpoint", "fields": ["roll", "pitch", "yaw"], "labels": ["Rollspeed", "Pitchspeed", "Yawspeed"], "to_deg": True},
 ]
 
 THRUST_TOPIC_CANDIDATES = ["actuator_controls", "actuator_motors"]
 MAGNETIC_TOPIC_CANDIDATES = ["sensor_mag", "vehicle_magnetometer", "sensor_combined"]
-IMU_CUTOFF_PARAMS = ["IMU_GYRO_CUTOFF", "IMU_DGYRO_CUTOFF"]
+
+# 滤波器参数 (按 Flight Review 标准)
+# Actuator Controls FFT 标记: MC_DTERM_CUTOFF, IMU_DGYRO_CUTOFF, IMU_GYRO_CUTOFF
+# Angular Velocity FFT 标记: IMU_GYRO_CUTOFF, IMU_GYRO_NF_FREQ (仅当 > 0 时)
+IMU_CUTOFF_PARAMS = ["MC_DTERM_CUTOFF", "IMU_DGYRO_CUTOFF", "IMU_GYRO_CUTOFF", "IMU_GYRO_NF_FREQ"]
+
+# 用于检测动态控制分配的 topic 名称
+DYNAMIC_CONTROL_ALLOC_TOPICS = ["actuator_motors", "actuator_servos"]
 
 # 每组使用候选 topic，按先后回退。
 FLIGHT_REVIEW_GROUPS = [

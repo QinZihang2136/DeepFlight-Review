@@ -176,8 +176,15 @@ class LogAnalyzer:
 
         return None
 
-    def get_topic_data(self, topic_name, downsample=True):
-        cache_key = f"{topic_name}_{downsample}"
+    def get_topic_data(self, topic_name, downsample=True, use_raw_timestamp=False):
+        """获取 topic 数据
+
+        Args:
+            topic_name: topic 名称
+            downsample: 是否降采样
+            use_raw_timestamp: 是否使用原始微秒 timestamp（用于 FFT 计算）
+        """
+        cache_key = f"{topic_name}_{downsample}_{use_raw_timestamp}"
         if cache_key in self.data_cache:
             return self.data_cache[cache_key]
 
@@ -191,7 +198,13 @@ class LogAnalyzer:
                 return None
 
             df = pd.DataFrame(dataset.data)
-            df["timestamp"] = (df["timestamp"] - self.ulog.start_timestamp) / 1e6
+
+            if use_raw_timestamp:
+                # FFT 计算需要原始微秒 timestamp
+                df["timestamp"] = df["timestamp"].astype(np.int64)
+            else:
+                # 其他用途：转换为相对秒
+                df["timestamp"] = (df["timestamp"] - self.ulog.start_timestamp) / 1e6
 
             self._augment_data(topic_name, df)
 
@@ -328,19 +341,38 @@ class LogAnalyzer:
         out = out.replace([np.inf, -np.inf], np.nan).dropna()
         return out
 
-    def get_multi_axis_signal(self, topic: str, fields: List[str], t0: float = None, t1: float = None):
-        """返回 timestamp + 多轴有效字段。"""
-        df = self.get_topic_data(topic, downsample=False)
+    def get_multi_axis_signal(self, topic: str, fields: List[str], t0: float = None, t1: float = None, use_raw_timestamp: bool = False):
+        """返回 timestamp + 多轴有效字段。
+
+        Args:
+            topic: topic 名称
+            fields: 字段列表
+            t0, t1: 时间窗口（秒）
+            use_raw_timestamp: 是否使用原始微秒 timestamp（用于 FFT 计算）
+        """
+        df = self.get_topic_data(topic, downsample=False, use_raw_timestamp=use_raw_timestamp)
         if df is None or "timestamp" not in df.columns:
             return pd.DataFrame(columns=["timestamp"])
         valid_fields = [f for f in fields if f in df.columns]
         if not valid_fields:
             return pd.DataFrame(columns=["timestamp"])
         out = df[["timestamp"] + valid_fields].copy()
-        if t0 is not None:
-            out = out[out["timestamp"] >= float(t0)]
-        if t1 is not None:
-            out = out[out["timestamp"] <= float(t1)]
+
+        if use_raw_timestamp and (t0 is not None or t1 is not None):
+            # 使用原始 timestamp 时，需要将秒转换为微秒进行过滤
+            t0_us = (float(t0) * 1e6 + self.ulog.start_timestamp) if t0 is not None else None
+            t1_us = (float(t1) * 1e6 + self.ulog.start_timestamp) if t1 is not None else None
+            if t0_us is not None:
+                out = out[out["timestamp"] >= t0_us]
+            if t1_us is not None:
+                out = out[out["timestamp"] <= t1_us]
+        else:
+            # 使用转换后的秒 timestamp
+            if t0 is not None:
+                out = out[out["timestamp"] >= float(t0)]
+            if t1 is not None:
+                out = out[out["timestamp"] <= float(t1)]
+
         out = out.replace([np.inf, -np.inf], np.nan)
         return out
 
@@ -358,18 +390,37 @@ class LogAnalyzer:
         return int(np.ceil(n / float(max_points)))
 
     def compute_fft(self, topic: str, field: str, t0: float = None, t1: float = None):
-        sig = self.get_signal(topic, field, t0=t0, t1=t1)
-        if sig.empty or len(sig) < 8:
+        """计算单个信号的 FFT (Flight Review 标准)
+
+        归一化公式: (2/N) * abs(FFT)
+        频率轴计算: 使用相邻时间差的中位数 * 1e-6
+        """
+        # ⚠️ 关键：使用原始微秒 timestamp，在计算时转换
+        multi = self.get_multi_axis_signal(topic, [field], t0=t0, t1=t1, use_raw_timestamp=True)
+        if multi.empty or "timestamp" not in multi.columns or field not in multi.columns:
             return pd.DataFrame(columns=["freq_hz", "amplitude"])
-        t = sig["timestamp"].to_numpy(dtype=float)
-        y = sig["value"].to_numpy(dtype=float)
-        dt = np.median(np.diff(t))
-        if not np.isfinite(dt) or dt <= 0:
+
+        t = multi["timestamp"].to_numpy(dtype=np.int64)
+        y = multi[field].to_numpy(dtype=float)
+
+        mask = np.isfinite(y)
+        y = y[mask]
+        if len(y) < 8:
             return pd.DataFrame(columns=["freq_hz", "amplitude"])
+
+        # ⚠️ 关键：使用相邻时间差的中位数来计算 delta_t
+        # 这样可以避免降采样的影响
+        delta_t = np.median(np.diff(t.astype(float))) * 1e-6  # 转换为秒
+
+        if delta_t <= 0:
+            return pd.DataFrame(columns=["freq_hz", "amplitude"])
+
         y = y - np.mean(y)
         n = len(y)
-        freq = np.fft.rfftfreq(n, d=dt)
-        amp = np.abs(np.fft.rfft(y)) / max(1, n)
+        # Flight Review 标准: fftfreq(n, d=delta_t)，d 是采样间隔（秒）
+        freq = np.fft.rfftfreq(n, d=delta_t)
+        # Flight Review 标准: (2/N) * abs(FFT)
+        amp = (2.0 / n) * np.abs(np.fft.rfft(y))
         return pd.DataFrame({"freq_hz": freq, "amplitude": amp})
 
     def compute_fft_multi(
@@ -380,31 +431,48 @@ class LogAnalyzer:
         t1: float = None,
         window: str = "hann",
     ) -> Dict[str, pd.DataFrame]:
-        """对多个字段计算 FFT。"""
-        key = ("fft_multi", topic, tuple(fields), t0, t1, window)
+        """对多个字段计算 FFT (Flight Review 标准)
+
+        归一化公式: (2/N) * abs(FFT)
+        频率轴计算: delta_t = ((timestamp[-1] - timestamp[0]) * 1e-6) / n
+        """
+        # ⚠️ 缓存 key 包含 raw_timestamp 标志，避免返回旧缓存
+        key = ("fft_multi_v3", topic, tuple(fields), t0, t1, window)
         if key in self.analysis_cache:
             return self.analysis_cache[key]
 
         result = {f: pd.DataFrame(columns=["freq_hz", "amplitude"]) for f in fields}
-        multi = self.get_multi_axis_signal(topic, fields, t0=t0, t1=t1)
+
+        # ⚠️ 关键：使用原始微秒 timestamp，在计算时转换
+        multi = self.get_multi_axis_signal(topic, fields, t0=t0, t1=t1, use_raw_timestamp=True)
         if multi.empty or "timestamp" not in multi.columns:
             self.analysis_cache[key] = result
             return result
 
-        t = multi["timestamp"].to_numpy(dtype=float)
+        t = multi["timestamp"].to_numpy(dtype=np.int64)
         if len(t) < 8:
             self.analysis_cache[key] = result
             return result
 
+        # ⚠️ 关键：在降采样前计算 delta_t（采样间隔）
+        # 使用相邻时间差的中位数来计算，避免降采样影响
+        n_original = len(t)
+        delta_t_original = np.median(np.diff(t.astype(float))) * 1e-6  # 转换为秒
+
+        if delta_t_original <= 0:
+            self.analysis_cache[key] = result
+            return result
+
+        # 降采样（仅为了减少计算量，不影响频率轴）
         step = self._resample_step(len(t), max_points=32768)
         if step > 1:
             multi = multi.iloc[::step, :]
-            t = multi["timestamp"].to_numpy(dtype=float)
 
-        dt = self._estimate_dt(t)
-        if dt is None:
-            self.analysis_cache[key] = result
-            return result
+        # 调试信息
+        sampling_freq = 1.0 / delta_t_original
+        nyquist = sampling_freq / 2
+        print(f"[FFT Debug] topic={topic}, original_n={n_original}, resampled_n={len(multi)}, "
+              f"delta_t={delta_t_original*1e6:.2f}us, sampling_freq={sampling_freq:.1f}Hz, nyquist={nyquist:.1f}Hz")
 
         for field in fields:
             if field not in multi.columns:
@@ -424,9 +492,15 @@ class LogAnalyzer:
             else:
                 yw = y
                 scale = 1.0
-            freq = np.fft.rfftfreq(n, d=dt)
-            amp = np.abs(np.fft.rfft(yw)) / max(1, n) / scale
+            # Flight Review 标准: fftfreq(n, d=delta_t)，d 是采样间隔（秒）
+            # ⚠️ 使用原始采样间隔，不是降采样后的
+            freq = np.fft.rfftfreq(n, d=delta_t_original)
+            # Flight Review 标准: (2/N) * abs(FFT) / scale
+            amp = (2.0 / n) * np.abs(np.fft.rfft(yw)) / scale
             result[field] = pd.DataFrame({"freq_hz": freq, "amplitude": amp})
+
+            # 调试：打印频率轴范围
+            print(f"[FFT Debug] field={field}, freq_range=[{freq[0]:.2f}, {freq[-1]:.2f}] Hz")
 
         self.analysis_cache[key] = result
         return result

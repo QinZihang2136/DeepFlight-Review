@@ -10,7 +10,10 @@ import streamlit as st
 from modules.flight_review_layout import (
     ACCEL_AXIS_CANDIDATES,
     ACTUATOR_FFT_CANDIDATES,
+    ACTUATOR_FFT_CANDIDATES_TRADITIONAL,
+    ACTUATOR_FFT_CANDIDATES_DYNAMIC,
     ANGULAR_RATE_FFT_CANDIDATES,
+    DYNAMIC_CONTROL_ALLOC_TOPICS,
     FLIGHT_REVIEW_GROUPS,
     GYRO_AXIS_CANDIDATES,
     IMU_CUTOFF_PARAMS,
@@ -54,6 +57,26 @@ def _first_valid_candidate(analyzer, candidates):
         if topic and topic in topics:
             return topic, item
     return None, None
+
+
+def _detect_dynamic_control_allocation(analyzer):
+    """检测是否使用动态控制分配 (Flight Review 标准)
+
+    根据文档: 如果存在 actuator_motors 或 actuator_servos topic，则使用动态控制分配
+    """
+    topics = analyzer.get_available_topics()
+    return any(name in topics for name in DYNAMIC_CONTROL_ALLOC_TOPICS)
+
+
+def _get_actuator_fft_candidates(analyzer):
+    """根据控制分配模式返回正确的 Actuator FFT 候选列表
+
+    Returns:
+        ACTUATOR_FFT_CANDIDATES_DYNAMIC 或 ACTUATOR_FFT_CANDIDATES_TRADITIONAL
+    """
+    if _detect_dynamic_control_allocation(analyzer):
+        return ACTUATOR_FFT_CANDIDATES_DYNAMIC
+    return ACTUATOR_FFT_CANDIDATES_TRADITIONAL
 
 
 def _plot_group(analyzer, group, t0, t1, use_downsample, show_rangeslider, mode_segments):
@@ -254,12 +277,26 @@ def _render_events_and_messages(analyzer, t0, t1):
 
 
 def _build_cutoff_param_map(analyzer):
-    params = analyzer.list_parameters(prefix="IMU_", max_results=1000)
+    """构建滤波器参数映射 (Flight Review 标准)
+
+    查找 IMU_ 前缀参数和 MC_DTERM_CUTOFF 参数
+    """
     out = {}
-    for p in params:
+
+    # 获取 IMU_ 前缀的参数
+    imu_params = analyzer.list_parameters(prefix="IMU_", max_results=1000)
+    for p in imu_params:
         name = str(p.get("name", ""))
         if name in IMU_CUTOFF_PARAMS:
             out[name] = p.get("value")
+
+    # 获取 MC_DTERM_CUTOFF 参数
+    mc_params = analyzer.list_parameters(prefix="MC_DTERM", max_results=100)
+    for p in mc_params:
+        name = str(p.get("name", ""))
+        if name == "MC_DTERM_CUTOFF":
+            out[name] = p.get("value")
+
     return out
 
 
@@ -399,7 +436,17 @@ def _render_thrust_magnetic_panel(analyzer, t0, t1, mode_segments):
     st.caption("参考: 磁场范数应保持恒定且与推力无关。若相关联则表示电机电流影响罗盘。")
 
 
-def _render_fft_panel(analyzer, panel_title, candidates, t0, t1, cutoff_map=None):
+def _render_fft_panel(analyzer, panel_title, candidates, t0, t1, cutoff_map=None, plot_type="actuator"):
+    """渲染 FFT 图表
+
+    Args:
+        analyzer: 日志分析器
+        panel_title: 面板标题
+        candidates: FFT 候选列表
+        t0, t1: 时间窗口
+        cutoff_map: 滤波器参数映射
+        plot_type: 图表类型 ('actuator' 或 'angular_velocity')
+    """
     st.markdown(f"#### {panel_title}")
     topic, chosen = _first_valid_candidate(analyzer, candidates)
     if not topic or not chosen:
@@ -424,17 +471,44 @@ def _render_fft_panel(analyzer, panel_title, candidates, t0, t1, cutoff_map=None
         st.info(f"数据不足: topic={topic}, fields={fields}")
         return
 
+    # 根据图表类型显示不同的滤波器参数 (Flight Review 标准)
     if cutoff_map:
-        for p in IMU_CUTOFF_PARAMS:
-            value = cutoff_map.get(p)
-            try:
-                if value is None:
+        if plot_type == "actuator":
+            # Actuator Controls FFT 标记: MC_DTERM_CUTOFF, IMU_DGYRO_CUTOFF, IMU_GYRO_CUTOFF
+            actuator_params = ["MC_DTERM_CUTOFF", "IMU_DGYRO_CUTOFF", "IMU_GYRO_CUTOFF"]
+            y_offset = 0
+            for p in actuator_params:
+                value = cutoff_map.get(p)
+                try:
+                    if value is None:
+                        continue
+                    x = float(value)
+                except Exception:
                     continue
-                x = float(value)
-            except Exception:
-                continue
-            fig.add_vline(x=x, line_dash="dash", line_color="rgba(20,20,20,0.65)")
-            fig.add_annotation(x=x, y=1.0, xref="x", yref="paper", text=p, showarrow=False, yanchor="bottom")
+                fig.add_vline(x=x, line_dash="dash", line_color="rgba(20,20,20,0.65)")
+                fig.add_annotation(x=x, y=1.0, xref="x", yref="paper", text=p, showarrow=False, yanchor="bottom")
+                y_offset += 20
+        elif plot_type == "angular_velocity":
+            # Angular Velocity FFT 标记: IMU_GYRO_CUTOFF, IMU_GYRO_NF_FREQ (仅当 > 0 时)
+            gyro_cutoff = cutoff_map.get("IMU_GYRO_CUTOFF")
+            if gyro_cutoff is not None:
+                try:
+                    x = float(gyro_cutoff)
+                    fig.add_vline(x=x, line_dash="dash", line_color="rgba(20,20,20,0.65)")
+                    fig.add_annotation(x=x, y=1.0, xref="x", yref="paper", text="IMU_GYRO_CUTOFF", showarrow=False, yanchor="bottom")
+                except Exception:
+                    pass
+
+            # IMU_GYRO_NF_FREQ 仅当 > 0 时标记
+            nf_freq = cutoff_map.get("IMU_GYRO_NF_FREQ")
+            if nf_freq is not None:
+                try:
+                    nf_val = float(nf_freq)
+                    if nf_val > 0:
+                        fig.add_vline(x=nf_val, line_dash="dash", line_color="rgba(20,20,20,0.65)")
+                        fig.add_annotation(x=nf_val, y=0.7, xref="x", yref="paper", text="IMU_GYRO_NF_FREQ", showarrow=False, yanchor="bottom")
+                except Exception:
+                    pass
 
     # Flight Review 标准图表样式
     fig.update_layout(
@@ -528,8 +602,14 @@ def _render_vibration_spectrogram_panel(analyzer, t0, t1):
 def _render_frequency(analyzer, t0, t1):
     st.markdown("### Frequency Analysis (FFT / PSD)")
     cutoff_map = _build_cutoff_param_map(analyzer)
-    _render_fft_panel(analyzer, "Actuator Controls FFT", ACTUATOR_FFT_CANDIDATES, t0, t1, cutoff_map=cutoff_map)
-    _render_fft_panel(analyzer, "Angular Velocity FFT", ANGULAR_RATE_FFT_CANDIDATES, t0, t1, cutoff_map=cutoff_map)
+
+    # Actuator Controls FFT: 根据动态控制分配检测选择正确的数据源
+    actuator_candidates = _get_actuator_fft_candidates(analyzer)
+    _render_fft_panel(analyzer, "Actuator Controls FFT", actuator_candidates, t0, t1, cutoff_map=cutoff_map, plot_type="actuator")
+
+    # Angular Velocity FFT
+    _render_fft_panel(analyzer, "Angular Velocity FFT", ANGULAR_RATE_FFT_CANDIDATES, t0, t1, cutoff_map=cutoff_map, plot_type="angular_velocity")
+
     _render_vibration_spectrogram_panel(analyzer, t0, t1)
 
     st.markdown("#### Custom Signal FFT / PSD")
