@@ -332,7 +332,7 @@ def _render_thrust_magnetic_panel(analyzer, t0, t1, mode_segments):
     """Render Thrust & Magnetic Field chart (Flight Review standard).
 
     Flight Review uses a single Y-axis (0-1 range) with both signals normalized.
-    Colors: Green = Thrust, Red = Norm of Magnetic Field
+    Colors: Green = Thrust, Orange = Norm of Magnetic Field
     """
     st.markdown("#### Thrust & Magnetic Field")
     df = analyzer.get_thrust_and_magnetic(t0=t0, t1=t1)
@@ -348,22 +348,26 @@ def _render_thrust_magnetic_panel(analyzer, t0, t1, mode_segments):
 
     # Flight Review standard colors
     THRUST_COLOR = "#2ca02c"  # Green (Flight Review standard)
-    MAG_NORM_COLOR = "#d62728"  # Red (Flight Review standard)
+    MAG_NORM_COLOR = "#ff7f0e"  # Orange (more visible than red)
 
     if has_thrust:
+        thrust_df = df[df["thrust"].notna()]
         fig.add_trace(go.Scatter(
-            x=df["timestamp"],
-            y=df["thrust"],
+            x=thrust_df["timestamp"],
+            y=thrust_df["thrust"],
             name="Thrust",
-            line=dict(width=1.5, color=THRUST_COLOR),
+            line=dict(width=2, color=THRUST_COLOR),
+            mode="lines",
         ))
 
     if has_mag:
+        mag_df = df[df["mag_norm"].notna()]
         fig.add_trace(go.Scatter(
-            x=df["timestamp"],
-            y=df["mag_norm"],
+            x=mag_df["timestamp"],
+            y=mag_df["mag_norm"],
             name="Norm of Magnetic Field",
-            line=dict(width=1.5, color=MAG_NORM_COLOR),
+            line=dict(width=2, color=MAG_NORM_COLOR),
+            mode="lines",
         ))
 
     if not has_thrust and not has_mag:
