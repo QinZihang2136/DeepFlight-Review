@@ -177,6 +177,7 @@ def _plot_group(analyzer, group, t0, t1, use_downsample, show_rangeslider, mode_
         height=300,
         margin=dict(l=50, r=20, t=20, b=40),
         hovermode="x unified",
+        template="plotly_white",  # 强制使用白色主题
         xaxis=dict(
             showgrid=True,
             gridcolor="#e8e8e8",
@@ -306,6 +307,7 @@ def _render_gps_noise_jamming_panel(analyzer, t0, t1, mode_segments):
         height=300,
         margin=dict(l=50, r=20, t=20, b=40),
         hovermode="x unified",
+        template="plotly_white",  # 强制使用白色主题
         xaxis=dict(showgrid=True, gridcolor="#e8e8e8", range=[float(t0), float(t1)]),
         yaxis=dict(showgrid=True, gridcolor="#e8e8e8"),
         legend=dict(
@@ -373,6 +375,7 @@ def _render_thrust_magnetic_panel(analyzer, t0, t1, mode_segments):
         height=300,
         margin=dict(l=50, r=20, t=20, b=40),
         hovermode="x unified",
+        template="plotly_white",  # 强制使用白色主题
         xaxis=dict(showgrid=True, gridcolor="#e8e8e8", range=[float(t0), float(t1)]),
         yaxis=dict(showgrid=True, gridcolor="#e8e8e8"),
         legend=dict(
@@ -434,6 +437,7 @@ def _render_fft_panel(analyzer, panel_title, candidates, t0, t1, cutoff_map=None
         height=320,
         margin=dict(l=50, r=20, t=20, b=40),
         hovermode="x unified",
+        template="plotly_white",  # 强制使用白色主题
         xaxis=dict(showgrid=True, gridcolor="#e8e8e8", title="Hz"),
         yaxis=dict(showgrid=True, gridcolor="#e8e8e8", title="Amplitude"),
         legend=dict(
@@ -478,6 +482,7 @@ def _render_single_spectrogram(analyzer, panel_title, topic, field, t0, t1, max_
     fig.update_layout(
         height=340,
         margin=dict(l=50, r=20, t=20, b=40),
+        template="plotly_white",  # 强制使用白色主题
         xaxis=dict(title="Time [s]", range=[float(t0), float(t1)], showgrid=True, gridcolor="#e8e8e8"),
         yaxis=dict(title="Hz", showgrid=True, gridcolor="#e8e8e8"),
         plot_bgcolor="white",
@@ -551,6 +556,7 @@ def _render_frequency(analyzer, t0, t1):
             fig.update_layout(
                 height=260,
                 margin=dict(l=50, r=20, t=25, b=40),
+                template="plotly_white",  # 强制使用白色主题
                 xaxis_title="Hz",
                 xaxis=dict(showgrid=True, gridcolor="#e8e8e8"),
                 yaxis=dict(showgrid=True, gridcolor="#e8e8e8"),
@@ -566,6 +572,7 @@ def _render_frequency(analyzer, t0, t1):
             fig.update_layout(
                 height=260,
                 margin=dict(l=50, r=20, t=25, b=40),
+                template="plotly_white",  # 强制使用白色主题
                 xaxis_title="Hz",
                 xaxis=dict(showgrid=True, gridcolor="#e8e8e8"),
                 yaxis=dict(showgrid=True, gridcolor="#e8e8e8"),
