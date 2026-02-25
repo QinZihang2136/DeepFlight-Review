@@ -54,3 +54,8 @@ htmlcov/
 *.tmp
 *.temp
 .cache/
+
+# Secrets (含 API Key 的脚本)
+run.sh
+.env
+*.key
