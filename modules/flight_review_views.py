@@ -18,6 +18,8 @@ from modules.flight_review_layout import (
     GYRO_AXIS_CANDIDATES,
     IMU_CUTOFF_PARAMS,
     MODE_COLORS,
+    MODE_COLORS_LEGEND,
+    MODE_DESCRIPTIONS,
 )
 from modules.ui_components import render_map
 
@@ -28,6 +30,37 @@ def _find_first_topic(analyzer, candidates):
         if df is not None:
             return t
     return None
+
+
+def _render_mode_legend(mode_segments):
+    """渲染飞行模式颜色图例"""
+    if not mode_segments:
+        return
+
+    # 获取当前飞行中出现的模式
+    modes_in_flight = list(set(seg.get("name", "") for seg in mode_segments))
+    if not modes_in_flight:
+        return
+
+    # 构建图例 HTML
+    legend_items = []
+    for mode in modes_in_flight:
+        if mode in MODE_COLORS_LEGEND:
+            color = MODE_COLORS_LEGEND[mode]
+            desc = MODE_DESCRIPTIONS.get(mode, mode)
+            legend_items.append(
+                f'<span style="background-color:{color};padding:2px 8px;border-radius:3px;'
+                f'color:white;font-size:11px;margin-right:4px;">{desc}</span>'
+            )
+
+    if legend_items:
+        st.markdown(
+            f'<div style="margin-bottom:10px;">'
+            f'<span style="font-size:12px;color:#666;margin-right:8px;">飞行模式:</span>'
+            f'{"".join(legend_items)}'
+            f'</div>',
+            unsafe_allow_html=True
+        )
 
 
 def _add_mode_background(fig, mode_segments, t0, t1):
@@ -685,6 +718,9 @@ def render_flight_review_dashboard_v2(analyzer):
     h3.metric("Airframe", str(analyzer.airframe))
     h4.metric("System", str(analyzer.sys_name))
     h5.metric("Firmware", str(analyzer.ver_sw))
+
+    # 飞行模式颜色图例
+    _render_mode_legend(mode_segments)
 
     # 全局窗口
     c1, c2 = st.columns([4, 2])

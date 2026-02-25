@@ -86,14 +86,59 @@ class LogAnalyzer:
 
     def _parse_meta_data(self):
         try:
-            self.start_time = datetime.datetime.fromtimestamp(self.ulog.start_timestamp / 1e6)
             self.duration = (self.ulog.last_timestamp - self.ulog.start_timestamp) / 1e6
             self.sys_name = self.ulog.msg_info_dict.get("sys_name", "Unknown")
             self.ver_sw = self.ulog.msg_info_dict.get("ver_sw", "Unknown")
             self.airframe = self.ulog.msg_info_dict.get("sys_autostart_id", "Unknown")
         except Exception:
-            self.start_time = datetime.datetime.now()
             self.duration = 0
+
+        # 解析开始时间（优先级：GPS UTC > msg_info > 文件时间 > 当前时间）
+        self.start_time = self._get_start_time()
+
+    def _get_start_time(self):
+        """获取飞行开始时间，优先从 GPS 获取真实 UTC 时间"""
+        # 1. 尝试从 GPS 数据获取 UTC 时间
+        for topic_name in ["vehicle_gps_position", "sensor_gps"]:
+            try:
+                for d in self.ulog.data_list:
+                    if d.name == topic_name and "time_utc_usec" in d.data:
+                        utc_usec = d.data["time_utc_usec"][0]
+                        if utc_usec > 1e15:  # 有效的 UTC 时间戳（微秒）
+                            return datetime.datetime.fromtimestamp(utc_usec / 1e6)
+            except Exception:
+                continue
+
+        # 2. 尝试从 msg_info 获取 time_ref_utc
+        try:
+            time_ref = self.ulog.msg_info_dict.get("time_ref_utc", 0)
+            if time_ref > 0:
+                return datetime.datetime.fromtimestamp(time_ref)
+        except Exception:
+            pass
+
+        # 3. 使用文件名或文件修改时间
+        try:
+            if hasattr(self.ulog, "file_name"):
+                # 尝试从文件名解析时间（如 log_0_2024-1-15-10-30-00.ulg）
+                import re
+                match = re.search(r'(\d{4})-(\d{1,2})-(\d{1,2})-(\d{1,2})-(\d{1,2})-(\d{1,2})', self.ulog.file_name)
+                if match:
+                    y, m, d, h, mi, s = map(int, match.groups())
+                    return datetime.datetime(y, m, d, h, mi, s)
+        except Exception:
+            pass
+
+        # 4. 检查 start_timestamp 是否为有效的 Unix 时间戳（大于 2020 年）
+        try:
+            ts = self.ulog.start_timestamp / 1e6
+            if ts > 1577836800:  # 2020-01-01
+                return datetime.datetime.fromtimestamp(ts)
+        except Exception:
+            pass
+
+        # 5. 默认使用当前时间
+        return datetime.datetime.now()
 
     def _calculate_kpis(self):
         self.kpis = {"max_alt": 0, "max_speed": 0, "dist_3d": 0}

@@ -13,6 +13,30 @@ MODE_COLORS = {
     "OFFBOARD": "rgba(26,188,156,0.08)",
 }
 
+# 飞行模式中文描述
+MODE_DESCRIPTIONS = {
+    "MANUAL": "手动",
+    "ALTCTL": "高度控制",
+    "POSCTL": "位置控制",
+    "AUTO_MISSION": "任务",
+    "AUTO_LOITER": "悬停",
+    "AUTO_RTL": "返航",
+    "AUTO_LAND": "降落",
+    "OFFBOARD": "离线控制",
+}
+
+# 用于图例显示的颜色（不透明版本）
+MODE_COLORS_LEGEND = {
+    "MANUAL": "#b4b4b4",
+    "ALTCTL": "#3498db",
+    "POSCTL": "#2ecc71",
+    "AUTO_MISSION": "#9b59b6",
+    "AUTO_LOITER": "#f1c40f",
+    "AUTO_RTL": "#e67e22",
+    "AUTO_LAND": "#e74c3c",
+    "OFFBOARD": "#1abc9c",
+}
+
 GPS_NOISE_FIELDS = {
     "noise": ["noise_per_ms", "noise", "noise_per_ms[0]"],
     "jamming": ["jamming_indicator", "jamming", "jam_ind"],

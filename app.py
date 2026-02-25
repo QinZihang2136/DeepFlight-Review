@@ -5,6 +5,10 @@ import threading
 import time
 from queue import Queue
 
+# 禁用代理（避免 GLM/DeepSeek API 连接问题）
+for proxy_var in ['http_proxy', 'https_proxy', 'HTTP_PROXY', 'HTTPS_PROXY', 'all_proxy', 'ALL_PROXY']:
+    os.environ.pop(proxy_var, None)
+
 import pandas as pd
 import streamlit as st
 from openai import OpenAI
@@ -290,11 +294,10 @@ if "bg_analysis" not in st.session_state:
 # 后台分析函数
 # =============================================================================
 
-def run_background_analysis(client, model_name, analyzer, user_prompt, ctx_mgr, max_steps):
+def run_background_analysis(client, model_name, analyzer, user_prompt, ctx_mgr, max_steps, bg):
     """在后台线程中运行AI分析"""
     import copy
 
-    bg = st.session_state.bg_analysis
     bg["status"] = "starting"
     bg["tool_logs"] = []
     bg["result"] = None
@@ -404,9 +407,12 @@ def start_background_analysis(client, model_name, analyzer, user_prompt, ctx_mgr
     bg = st.session_state.bg_analysis
     bg["running"] = True
     bg["user_prompt"] = user_prompt
+    bg["saved"] = False  # 重置保存标志
+    bg["result"] = None  # 清除上次结果
+    bg["error"] = None   # 清除上次错误
 
     def run():
-        run_background_analysis(client, model_name, analyzer, user_prompt, ctx_mgr, max_steps)
+        run_background_analysis(client, model_name, analyzer, user_prompt, ctx_mgr, max_steps, bg)
 
     thread = threading.Thread(target=run, daemon=True)
     thread.start()
@@ -618,9 +624,10 @@ if st.session_state.analyzer:
 
                 # 检查是否完成
                 if bg["status"] == "completed":
-                    # 保存结果到消息历史
-                    if bg.get("result"):
+                    # 保存结果到消息历史（仅当结果未被保存过）
+                    if bg.get("result") and not bg.get("saved"):
                         st.session_state.messages.append({"role": "assistant", "content": bg["result"]})
+                        bg["saved"] = True  # 标记已保存
                     bg["running"] = False
                     progress_placeholder.empty()
                     tool_log_placeholder.empty()
@@ -628,7 +635,9 @@ if st.session_state.analyzer:
 
                 elif bg["status"] == "error":
                     error_msg = f"❌ 分析出错: {bg.get('error', '未知错误')}"
-                    st.session_state.messages.append({"role": "assistant", "content": error_msg})
+                    if not bg.get("saved"):
+                        st.session_state.messages.append({"role": "assistant", "content": error_msg})
+                        bg["saved"] = True
                     bg["running"] = False
                     progress_placeholder.empty()
                     tool_log_placeholder.empty()
